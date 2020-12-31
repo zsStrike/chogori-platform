@@ -213,10 +213,13 @@ IndexerIterator K23SIPartitionModule::_initializeScan(const dto::Key& start, boo
     if (reverse) {
         if (start.partitionKey == "" || key_it == _indexer.end()) {
             key_it = (++_indexer.rbegin()).base();
+            K2INFO("start of reverse was at end now at: " << key_it->first);
         } else if (key_it->first == start && exclusiveKey) {
+            K2INFO("advancing once for exclusive key");
             _scanAdvance(key_it, reverse, start.schemaName);
         } else if (key_it->first > start) {
             while (key_it->first > start) {
+                K2INFO("advancing to: " << start);
                 _scanAdvance(key_it, reverse, start.schemaName);
             }
         }
@@ -231,8 +234,12 @@ IndexerIterator K23SIPartitionModule::_initializeScan(const dto::Key& start, boo
 
 // Helper for handleQuery. Checks to see if the indexer scan should stop.
 bool K23SIPartitionModule::_isScanDone(const IndexerIterator& it, const dto::K23SIQueryRequest& request,
-                                       size_t response_size) {
+                                       const dto::Key& originalEnd, size_t response_size) {
     if (it == _indexer.end()) {
+        return true;
+    } else if (originalEnd == it->first) {
+        // The end key in the request may have been adjusted to handle prefix-style scans, but
+        // we still need to exclude the original end key if it was fully specified
         return true;
     } else if (!request.reverseDirection && it->first >= request.endKey &&
                request.endKey.partitionKey != "") {
@@ -249,26 +256,33 @@ bool K23SIPartitionModule::_isScanDone(const IndexerIterator& it, const dto::K23
 }
 
 // Helper for handleQuery. Returns continuation token (aka response.nextToScan)
-dto::Key K23SIPartitionModule::_getContinuationToken(const IndexerIterator& it,
-                    const dto::K23SIQueryRequest& request, dto::K23SIQueryResponse& response, size_t response_size) {
-    // Three cases where scan is for sure done:
+dto::Key K23SIPartitionModule::_getContinuationToken(const IndexerIterator& it, const dto::Key& originalEnd,
+                                    const dto::K23SIQueryRequest& request, dto::K23SIQueryResponse& response,
+                                    size_t response_size) {
+    // Four cases where scan is for sure done:
     // 1. Record limit is reached
-    // 2. Iterator is not end() but is >= user endKey
-    // 3. Iterator is at end() and partition bounds contains endKey
+    // 2. Iterator is not end() but is >= endKey
+    // 3. Iterator is not end() but is == originalEndKey
+    // 4. Iterator is at end() and partition bounds contains endKey
     // This also works around seastars lack of operators on the string type
     if ((request.recordLimit >= 0 && response_size == (uint32_t)request.recordLimit) ||
         // Test for past user endKey:
         (it != _indexer.end() &&
             (request.reverseDirection ? it->first <= request.endKey : it->first >= request.endKey && request.endKey.partitionKey != "")) ||
+        (it != _indexer.end() &&
+            (it->first == originalEnd && request.endKey.partitionKey != "")) ||
         // Test for partition bounds contains endKey and we are at end()
         (it == _indexer.end() &&
             (request.reverseDirection ?
             _partition().startKey < request.endKey.partitionKey :
             request.endKey.partitionKey < _partition().endKey && request.endKey.partitionKey != "")) ||
+        // TODO In case 2 above we know it is safe to check originalEnd == it->first because it can only
+        // happen if the originalEnd was from a fully specified key. Here though, partition range bounds
+        // may be only partially specified so I don't know if it is safe.
         (it == _indexer.end() &&
             (request.reverseDirection ?
-            request.endKey.partitionKey == _partition().startKey :
-            request.endKey.partitionKey == _partition().endKey))) {
+            originalEnd.partitionKey == _partition().startKey :
+            originalEnd.partitionKey == _partition().endKey))) {
         return dto::Key();
     }
     else if (it != _indexer.end()) {
@@ -328,6 +342,31 @@ std::tuple<Status, bool> K23SIPartitionModule::_doQueryFilter(dto::K23SIQueryReq
     return std::make_tuple(std::move(status), keep);
 }
 
+// Helper for handleQuery. This adjusts the start or end keys (based on reverse or forward scan) to
+// support prefix scans. For example, a schema with "tableID" and "name" partition key fields. If the
+// user wants to scan all records with tableID==1 and doesn't care about the name, then the start and
+// end records will have tableID serialized but not name. The server sees these two records as the same
+// and thus no records to return unless we adjust the end key. Also note that we cannot tell at this point
+// which key fields have been serialized by the user. This function appends a 255 byte to the end key
+// (for forward scan) which makes it compare greater than any key with the field serialized because the
+// type byte is always part of a normal fully specified key.
+// Returns the original end key, which is exclusive and needs to be skipped if there is an exact match
+dto::Key K23SIPartitionModule::_adjustScanBounds(dto::K23SIQueryRequest& request) {
+    dto::Key originalEnd = request.endKey;
+    if (request.exclusiveKey) {
+        // This was a multi-partition paginated request, no need to adjust
+        return originalEnd;
+    }
+
+    dto::Key& key = request.reverseDirection ? request.key : request.endKey;
+    k2::String appendByte(String::initialized_later(), 1);
+    appendByte[0] = 255;
+    key.partitionKey += appendByte;
+    key.rangeKey += appendByte;
+
+    return originalEnd;
+}
+
 seastar::future<std::tuple<Status, dto::K23SIQueryResponse>>
 K23SIPartitionModule::handleQuery(dto::K23SIQueryRequest&& request, dto::K23SIQueryResponse&& response, FastDeadline deadline) {
     K2DEBUG("Partition: " << _partition << ", received query " << request);
@@ -340,8 +379,9 @@ K23SIPartitionModule::handleQuery(dto::K23SIQueryRequest&& request, dto::K23SIQu
             return RPCResponse(dto::K23SIStatus::OperationNotAllowed("Query not implemented for hash partitioned collection"), dto::K23SIQueryResponse{});
     }
 
+    dto::Key originalEnd = _adjustScanBounds(request);
     IndexerIterator key_it = _initializeScan(request.key, request.reverseDirection, request.exclusiveKey);
-    for (; !_isScanDone(key_it, request, response.results.size());
+    for (; !_isScanDone(key_it, request, originalEnd, response.results.size());
                         _scanAdvance(key_it, request.reverseDirection, request.key.schemaName)) {
         auto& versions = key_it->second;
         auto viter = _getVersion(versions, request.mtr.timestamp);
@@ -425,7 +465,7 @@ K23SIPartitionModule::handleQuery(dto::K23SIQueryRequest&& request, dto::K23SIQu
         _readCache->insertInterval(request.key, endInterval, request.mtr.timestamp);
 
 
-    response.nextToScan = _getContinuationToken(key_it, request, response, response.results.size());
+    response.nextToScan = _getContinuationToken(key_it, originalEnd, request, response, response.results.size());
     K2DEBUG("nextToScan: " << response.nextToScan << ", exclusiveToken: " << response.exclusiveToken);
     return RPCResponse(dto::K23SIStatus::OK("Query success"), std::move(response));
 }

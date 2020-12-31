@@ -198,6 +198,9 @@ private: // methods
     // helper method used to create and persist a WriteIntent
     seastar::future<> _createWI(dto::K23SIWriteRequest&& request, VersionsT& versions, FastDeadline deadline);
 
+    // helper method for handleQuery. Returns original end key before adjustment
+    static dto::Key _adjustScanBounds(dto::K23SIQueryRequest& request);
+
     // helper method used to make a projection SKVRecord payload
     bool _makeProjection(dto::SKVRecord::Storage& fullRec, dto::K23SIQueryRequest& request, dto::SKVRecord::Storage& projectionRec);
 
@@ -228,11 +231,13 @@ private: // methods
     IndexerIterator _initializeScan(const dto::Key& start, bool reverse, bool exclusiveKey);
 
     // Helper for handleQuery. Checks to see if the indexer scan should stop.
-    bool _isScanDone(const IndexerIterator& it, const dto::K23SIQueryRequest& request, size_t response_size);
+    bool _isScanDone(const IndexerIterator& it, const dto::K23SIQueryRequest& request,
+                     const dto::Key& originalEnd, size_t response_size);
 
     // Helper for handleQuery. Returns continuation token (aka response.nextToScan)
-    dto::Key _getContinuationToken(const IndexerIterator& it, const dto::K23SIQueryRequest& request,
-                                            dto::K23SIQueryResponse& response, size_t response_size);
+    dto::Key _getContinuationToken(const IndexerIterator& it, const dto::Key& originalEnd,
+                                   const dto::K23SIQueryRequest& request,
+                                   dto::K23SIQueryResponse& response, size_t response_size);
 
     std::tuple<Status, bool> _doQueryFilter(dto::K23SIQueryRequest& request, dto::SKVRecord::Storage& storage);
 
