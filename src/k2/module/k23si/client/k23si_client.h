@@ -182,7 +182,8 @@ private:
     std::unique_ptr<dto::K23SIReadRequest> makeReadRequest(const dto::Key& key,
                                                            const String& collectionName) const;
     std::unique_ptr<dto::K23SIWriteRequest> makeWriteRequest(dto::SKVRecord& record, bool erase,
-                                                             bool rejectIfExists);
+                                                             bool rejectIfExists, bool writeAsync);
+    std::unique_ptr<dto::K23SIWriteKeyRequest> makeWriteKeyRequest(dto::K23SIWriteRequest& request);
 
     template <class T>
     std::unique_ptr<dto::K23SIReadRequest> makeReadRequest(const T& user_record) const {
@@ -245,7 +246,7 @@ public:
     }
 
     template <class T>
-    seastar::future<WriteResult> write(T& record, bool erase=false, bool rejectIfExists=false) {
+    seastar::future<WriteResult> write(T& record, bool erase=false, bool rejectIfExists=false, bool writeAsync=false) {
         if (!_valid) {
             return seastar::make_exception_future<WriteResult>(K23SIClientException("Invalid use of K2TxnHandle"));
         }
@@ -255,16 +256,52 @@ public:
 
         std::unique_ptr<dto::K23SIWriteRequest> request = nullptr;
         if constexpr (std::is_same<T, dto::SKVRecord>()) {
-            request = makeWriteRequest(record, erase, rejectIfExists);
+            request = makeWriteRequest(record, erase, rejectIfExists, writeAsync);
         } else {
             SKVRecord skv_record(record.collectionName, record.schema);
             record.__writeFields(skv_record);
-            request = makeWriteRequest(skv_record, erase, rejectIfExists);
+            request = makeWriteRequest(skv_record, erase, rejectIfExists, writeAsync);
         }
 
         _client->write_ops++;
-        _ongoing_ops++;
 
+        if (writeAsync) {
+            _ongoing_ops += 2;
+            auto futForPartion = _cpo_client->PartitionRequest
+                    <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
+                    (_options.deadline, *request);
+            std::unique_ptr<dto::K23SIWriteKeyRequest> writeKeyRequest = makeWriteKeyRequest(*request);
+            auto futForTrh = _cpo_client->PartitionRequest
+                    <dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse, dto::Verbs::K23SI_WRITE_KEY>
+                    (_options.deadline, *writeKeyRequest);
+            return seastar::when_all_succeed(std::move(futForPartion), std::move(futForTrh))
+                .then([this] (auto&& responseForWrite, auto&& responseForWriteKey) {
+                    auto& [statusForWrite, resForWrite] = responseForWrite;
+                    auto& [statusForWriteKey, _] = responseForWriteKey;
+
+                    checkResponseStatus(statusForWrite);
+                    _ongoing_ops -= 2;
+
+                    if (!statusForWriteKey.is2xxOK()){
+                        // if the trh not track the write key, just make a failed write result to client, and client will have to retry the write again
+                        return seastar::make_ready_future<WriteResult>(WriteResult(std::move(statusForWriteKey), std::move(resForWrite)));
+                    }
+
+                    if (statusForWrite.is2xxOK() && _heartbeat_timer.isArmed()) {
+                        K2ASSERT(log::skvclient, _cpo_client->collections.find(_trh_collection) != _cpo_client->collections.end(), "collection not present after successful write");
+                        K2LOG_D(log::skvclient, "Starting hb, mtr={}", _mtr);
+                        _heartbeat_interval = _cpo_client->collections[_trh_collection].collection.metadata.heartbeatDeadline / 2;
+                        makeHeartbeatTimer();
+                        _heartbeat_timer.armPeriodic(_heartbeat_interval);
+                    }
+                    return seastar::make_ready_future<WriteResult>(WriteResult(std::move(statusForWrite), std::move(resForWrite)));
+            }).finally([r1 = std::move(request), r2 = std::move(writeKeyRequest)] () {
+                (void) r1;
+                (void) r2;
+            });
+        }
+
+        _ongoing_ops++;
         return _cpo_client->PartitionRequest
             <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
             (_options.deadline, *request).

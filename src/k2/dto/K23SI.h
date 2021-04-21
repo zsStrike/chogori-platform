@@ -240,22 +240,44 @@ struct K23SIWriteRequest {
     Key key; // the key for the write
     SKVRecord::Storage value; // the value of the write
     std::vector<uint32_t> fieldsForPartialUpdate; // if size() > 0 then this is a partial update
+    // whether the write request is persisted asynchronously
+    bool writeAsync = false;
 
     K23SIWriteRequest() = default;
     K23SIWriteRequest(Partition::PVID _pvid, String cname, K23SI_MTR _mtr, Key _trh, bool _isDelete,
                       bool _designateTRH, bool _rejectIfExists, uint64_t id, Key _key, SKVRecord::Storage _value,
-                      std::vector<uint32_t> _fields) :
+                      std::vector<uint32_t> _fields, bool _writeAsync) :
         pvid(std::move(_pvid)), collectionName(std::move(cname)), mtr(std::move(_mtr)), trh(std::move(_trh)),
         isDelete(_isDelete), designateTRH(_designateTRH), rejectIfExists(_rejectIfExists), request_id(id),
-        key(std::move(_key)), value(std::move(_value)), fieldsForPartialUpdate(std::move(_fields)) {}
+        key(std::move(_key)), value(std::move(_value)), fieldsForPartialUpdate(std::move(_fields)), writeAsync(_writeAsync) {}
 
-    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, trh, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate);
-    K2_DEF_FMT(K23SIWriteRequest, pvid, collectionName, mtr, trh, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate);
+    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, trh, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate, writeAsync);
+    K2_DEF_FMT(K23SIWriteRequest, pvid, collectionName, mtr, trh, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate, writeAsync);
 };
 
 struct K23SIWriteResponse {
     K2_PAYLOAD_EMPTY;
     K2_DEF_FMT(K23SIWriteResponse);
+};
+
+struct K23SIWriteKeyRequest {
+    Partition::PVID pvid;   // the partition version ID. Should be coming from an up-to-date partition map
+    K23SI_MTR mtr;  // the MTR for the issuing transaction
+    Key trh;    // The TRH key is used to find the K2 node which owns a transaction
+    Key key;    // the key for the write    TODO: since cpo use the name key to route, we will have to change it
+    uint64_t request_id;    // used to identify each write operation
+
+    K23SIWriteKeyRequest() = default;
+    K23SIWriteKeyRequest(Partition::PVID _pvid, K23SI_MTR _mtr, Key _trh, Key _key, uint64_t id) :
+        pvid(std::move(_pvid)), mtr(std::move(_mtr)) ,trh(std::move(_trh)), key(std::move(_key)), request_id(id) {}
+
+    K2_PAYLOAD_FIELDS(pvid, mtr, trh, key, request_id);
+    K2_DEF_FMT(K23SIWriteKeyRequest, pvid, mtr, trh, key, request_id);
+};
+
+struct K23SIWriteKeyResponse {
+    K2_PAYLOAD_EMPTY;
+    K2_DEF_FMT(K23SIWriteKeyResponse);
 };
 
 struct K23SIQueryRequest {

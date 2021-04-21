@@ -81,6 +81,9 @@ public:
     seastar::future<std::tuple<Status, dto::K23SIWriteResponse>>
     handleWrite(dto::K23SIWriteRequest&& request, FastDeadline deadline);
 
+    seastar::future<std::tuple<Status, dto::K23SIWriteKeyResponse>>
+    handleWriteKey(dto::K23SIWriteKeyRequest&& request, FastDeadline deadline);
+
     seastar::future<std::tuple<Status, dto::K23SIQueryResponse>>
     handleQuery(dto::K23SIQueryRequest&& request, dto::K23SIQueryResponse&& response, FastDeadline deadline);
 

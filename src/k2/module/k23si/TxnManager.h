@@ -39,6 +39,12 @@ namespace k2 {
 
 namespace nsbi = boost::intrusive;
 
+// to determine whether the write key req is persisted
+struct WriteKeyStatus {
+    uint64_t request_id;
+    bool persisted;
+};
+
 // A Transaction record
 struct TxnRecord {
     dto::TxnId txnId;
@@ -46,6 +52,9 @@ struct TxnRecord {
     // the keys to which this transaction wrote. These are delivered as part of the End request and we have to ensure
     // that the corresponding write intents are converted appropriately
     std::vector<dto::Key> writeKeys;
+
+    //
+    std::unordered_map<dto::Key, WriteKeyStatus> writeKeysStatus;
 
     // Expiry time point for retention window - these are driven off each TSO clock update
     dto::Timestamp rwExpiry;

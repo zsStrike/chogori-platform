@@ -187,6 +187,11 @@ seastar::future<> K23SIPartitionModule::_registerVerbs() {
             .then([this] (auto&& resp) { return _respondAfterFlush(std::move(resp));});
     });
 
+    RPC().registerRPCObserver<dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse>
+    (dto::Verbs::K23SI_WRITE_KEY, [this](dto::K23SIWriteKeyRequest&& request) {
+        return handleWriteKey(std::move(request), FastDeadline(_config.writeTimeout()));
+    });
+
     RPC().registerRPCObserver<dto::K23SITxnPushRequest, dto::K23SITxnPushResponse>
     (dto::Verbs::K23SI_TXN_PUSH, [this](dto::K23SITxnPushRequest&& request) {
         return handleTxnPush(std::move(request));
@@ -1085,6 +1090,31 @@ K23SIPartitionModule::_processWrite(dto::K23SIWriteRequest&& request, FastDeadli
         K2LOG_D(log::skvsvr, "WI created");
         return RPCResponse(dto::K23SIStatus::Created("WI created"), dto::K23SIWriteResponse{});
     });
+}
+
+seastar::future<std::tuple<Status, dto::K23SIWriteKeyResponse>>
+K23SIPartitionModule::handleWriteKey(dto::K23SIWriteKeyRequest&& request, FastDeadline deadline) {
+    K2LOG_D(log::skvsvr, "Partition: {}, received write key request {}", _partition, request);
+
+    Status validateStatus = _validateReadRequest(request);
+    if (!validateStatus.is2xxOK()) {
+        return RPCResponse(std::move(validateStatus), dto::K23SIWriteKeyResponse{});
+    }
+
+    K2LOG_D(log::skvsvr, "track write key {} with request_id {} from txn {}",
+            request.key, request.request_id, request.mtr);
+
+    TxnId txnId {.trh=request.trh, .mtr=request.mtr};
+    auto writeKeysStatus = _txnMgr.getTxnRecord(std::move(txnId)).writeKeysStatus;
+    auto it = writeKeysStatus.find(request.key);
+    if (it == writeKeysStatus.end()) {
+        writeKeysStatus.insert({request.key, {request.request_id, false}});
+    } else {
+        it->second.request_id = request.request_id;
+        it->second.persisted = false;
+    }
+
+    return RPCResponse(dto::K23SIStatus::OK("track the write key successfully"), dto::K23SIWriteKeyResponse());
 }
 
 seastar::future<std::tuple<Status, dto::K23SITxnPushResponse>>
