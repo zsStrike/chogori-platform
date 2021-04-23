@@ -28,6 +28,7 @@ Copyright(c) 2020 Futurewei Cloud
 
 #include <seastar/core/future.hh>
 #include <seastar/core/future-util.hh>
+#include <seastar/core/when_all.hh>
 
 #include <k2/appbase/Appbase.h>
 #include <k2/appbase/AppEssentials.h>
@@ -266,39 +267,39 @@ public:
         _client->write_ops++;
 
         if (writeAsync) {
-            _ongoing_ops += 2;
-            auto futForPartion = _cpo_client->PartitionRequest
-                    <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
-                    (_options.deadline, *request);
             std::unique_ptr<dto::K23SIWriteKeyRequest> writeKeyRequest = makeWriteKeyRequest(*request);
-            auto futForTrh = _cpo_client->PartitionRequest
-                    <dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse, dto::Verbs::K23SI_WRITE_KEY>
-                    (_options.deadline, *writeKeyRequest);
-            return seastar::when_all_succeed(std::move(futForPartion), std::move(futForTrh))
-                .then([this] (auto&& responseForWrite, auto&& responseForWriteKey) {
-                    auto& [statusForWrite, resForWrite] = responseForWrite;
-                    auto& [statusForWriteKey, _] = responseForWriteKey;
+            return seastar::when_all(
+                _cpo_client->PartitionRequest
+                        <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
+                        (_options.deadline, *request),
+                _cpo_client->PartitionRequest
+                        <dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse, dto::Verbs::K23SI_WRITE_KEY>
+                        (_options.deadline, *writeKeyRequest)
+                ).then([this] (auto&& response) {
+                    auto& [writeResp, writeKeyResp] = response;
+                    auto [writeStatus, writeRes] = writeResp.get0();
+                    auto [writeKeyStatus, _] = writeKeyResp.get0();
 
-                    checkResponseStatus(statusForWrite);
-                    _ongoing_ops -= 2;
+                    _ongoing_ops--;
 
-                    if (!statusForWriteKey.is2xxOK()){
-                        // if the trh not track the write key, just make a failed write result to client, and client will have to retry the write again
-                        return seastar::make_ready_future<WriteResult>(WriteResult(std::move(statusForWriteKey), std::move(resForWrite)));
+                    checkResponseStatus(writeKeyStatus);
+                    if (!writeKeyStatus.is2xxOK()) {
+                        return seastar::make_ready_future<WriteResult>(WriteResult(std::move(writeKeyStatus), std::move(writeRes)));
                     }
 
-                    if (statusForWrite.is2xxOK() && _heartbeat_timer.isArmed()) {
+                    checkResponseStatus(writeStatus);
+                    if (writeStatus.is2xxOK() && !_heartbeat_timer.isArmed()) {
                         K2ASSERT(log::skvclient, _cpo_client->collections.find(_trh_collection) != _cpo_client->collections.end(), "collection not present after successful write");
                         K2LOG_D(log::skvclient, "Starting hb, mtr={}", _mtr);
                         _heartbeat_interval = _cpo_client->collections[_trh_collection].collection.metadata.heartbeatDeadline / 2;
                         makeHeartbeatTimer();
                         _heartbeat_timer.armPeriodic(_heartbeat_interval);
                     }
-                    return seastar::make_ready_future<WriteResult>(WriteResult(std::move(statusForWrite), std::move(resForWrite)));
-            }).finally([r1 = std::move(request), r2 = std::move(writeKeyRequest)] () {
-                (void) r1;
-                (void) r2;
-            });
+                    return seastar::make_ready_future<WriteResult>(WriteResult(std::move(writeStatus), std::move(writeRes)));
+                }).finally([r1=std::move(writeKeyRequest), r2=std::move(request)] () {
+                    (void) r1;
+                    (void) r2;
+                });
         }
 
         _ongoing_ops++;
@@ -377,6 +378,7 @@ public:
                     PartialUpdateResult(dto::K23SIStatus::BadParameter("error makePartialUpdateRequest()")) );
         }
 
+        // TODO: write async method should be here
         return _cpo_client->PartitionRequest
             <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
             (_options.deadline, *request).

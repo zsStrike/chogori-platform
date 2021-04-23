@@ -183,13 +183,21 @@ seastar::future<> K23SIPartitionModule::_registerVerbs() {
 
     RPC().registerRPCObserver<dto::K23SIWriteRequest, dto::K23SIWriteResponse>
     (dto::Verbs::K23SI_WRITE, [this](dto::K23SIWriteRequest&& request) {
+        if (request.writeAsync) {
+            return handleWrite(std::move(request), FastDeadline(_config.writeTimeout()));
+        }
         return handleWrite(std::move(request), FastDeadline(_config.writeTimeout()))
             .then([this] (auto&& resp) { return _respondAfterFlush(std::move(resp));});
     });
 
     RPC().registerRPCObserver<dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse>
     (dto::Verbs::K23SI_WRITE_KEY, [this](dto::K23SIWriteKeyRequest&& request) {
-        return handleWriteKey(std::move(request), FastDeadline(_config.writeTimeout()));
+        return handleWriteKey(std::move(request));
+    });
+
+    RPC().registerRPCObserver<dto::K23SIWriteKeyPersistRequest, dto::K23SIWriteKeyPersistResponse>
+    (dto::Verbs::K23SI_WRITE_KEY_PERSIST, [this](dto::K23SIWriteKeyPersistRequest&& request) {
+        return handleWriteKeyPersist(std::move(request));
     });
 
     RPC().registerRPCObserver<dto::K23SITxnPushRequest, dto::K23SITxnPushResponse>
@@ -1093,7 +1101,7 @@ K23SIPartitionModule::_processWrite(dto::K23SIWriteRequest&& request, FastDeadli
 }
 
 seastar::future<std::tuple<Status, dto::K23SIWriteKeyResponse>>
-K23SIPartitionModule::handleWriteKey(dto::K23SIWriteKeyRequest&& request, FastDeadline deadline) {
+K23SIPartitionModule::handleWriteKey(dto::K23SIWriteKeyRequest&& request) {
     K2LOG_D(log::skvsvr, "Partition: {}, received write key request {}", _partition, request);
 
     Status validateStatus = _validateReadRequest(request);
@@ -1102,19 +1110,46 @@ K23SIPartitionModule::handleWriteKey(dto::K23SIWriteKeyRequest&& request, FastDe
     }
 
     K2LOG_D(log::skvsvr, "track write key {} with request_id {} from txn {}",
-            request.key, request.request_id, request.mtr);
+            request.writeKey, request.request_id, request.mtr);
 
-    TxnId txnId {.trh=request.trh, .mtr=request.mtr};
+    TxnId txnId {.trh=request.key, .mtr=request.mtr};
     auto writeKeysStatus = _txnMgr.getTxnRecord(std::move(txnId)).writeKeysStatus;
-    auto it = writeKeysStatus.find(request.key);
+    auto it = writeKeysStatus.find(request.writeKey);
+    // case 1: first write for the write key
     if (it == writeKeysStatus.end()) {
-        writeKeysStatus.insert({request.key, {request.request_id, false}});
-    } else {
-        it->second.request_id = request.request_id;
-        it->second.persisted = false;
+        writeKeysStatus.insert({request.writeKey, {request.request_id, false}});
+        return RPCResponse(dto::K23SIStatus::Created("created the write key status struct"), dto::K23SIWriteKeyResponse());
+    }
+    // case 2: not the first write for the write key
+    it->second.request_id = request.request_id;
+    it->second.persisted = false;
+    return RPCResponse(dto::K23SIStatus::OK("update the write key status successfully"), dto::K23SIWriteKeyResponse());
+}
+
+seastar::future<std::tuple<Status, dto::K23SIWriteKeyPersistResponse>>
+K23SIPartitionModule::handleWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& request) {
+    K2LOG_D(log::skvsvr, "Partition: {}, received write key persist request {}", _partition, request);
+
+    Status validateStatus = _validateReadRequest(request);
+    if (!validateStatus.is2xxOK()) {
+        return RPCResponse(std::move(validateStatus), dto::K23SIWriteKeyPersistResponse());
     }
 
-    return RPCResponse(dto::K23SIStatus::OK("track the write key successfully"), dto::K23SIWriteKeyResponse());
+    K2LOG_D(log::skvsvr, "persisted write key {} with request_id {} from txn {}",
+            request.writeKey, request.request_id, request.mtr);
+
+    TxnId txnId {.trh=request.key, .mtr=request.mtr};
+    auto writeKeysStatus = _txnMgr.getTxnRecord(std::move(txnId)).writeKeysStatus;
+    auto it = writeKeysStatus.find(request.writeKey);
+    // case 1: the key not in the writeKeysStatus map
+    if (it == writeKeysStatus.end()) {
+        return RPCResponse(dto::K23SIStatus::KeyNotFound("the write key does not in writeKeysStatus map"), dto::K23SIWriteKeyPersistResponse());
+    }
+    // case 2: the key is in tracking
+    if (it->second.request_id == request.request_id) {
+        it->second.persisted = true;
+    }
+    return RPCResponse(dto::K23SIStatus::OK("update the write key status successfully"), dto::K23SIWriteKeyPersistResponse());
 }
 
 seastar::future<std::tuple<Status, dto::K23SITxnPushResponse>>
@@ -1226,8 +1261,42 @@ K23SIPartitionModule::_createWI(dto::K23SIWriteRequest&& request, VersionSet& ve
 
     versions.WI.emplace(std::move(rec), std::move(txnId), request.request_id);
 
-    _persistence->append(versions.WI->data);
+    if (request.writeAsync) {
+        auto futPersist = _persistence->append_cont(versions.WI->data)
+            .then([this, request=std::move(request)] (auto&& status) {
+                if (!status.is2xxOK()) {
+                    K2LOG_E(log::skvsvr, "write key flush failed for request {}", request);
+                }
+                // now the write intent persisted successfully, the participant should send persisted message to trh
+                dto::K23SIWriteKeyPersistRequest writeKeyPeristRequest{
+                    request.pvid,
+                    request.collectionName,
+                    request.mtr,
+                    request.trh,
+                    request.key,
+                    request.request_id
+                };
+                return _notifyWriteKeyPersist(std::move(writeKeyPeristRequest));
+            });
+    } else {
+        _persistence->append(versions.WI->data);
+    }
     return seastar::make_ready_future();
+}
+
+seastar::future<>
+K23SIPartitionModule::_notifyWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& request) {
+    // no need to validate the request, since the qrite key persist request is adapted from the write request
+    return _cpo.PartitionRequest
+        <dto::K23SIWriteKeyPersistRequest, dto::K23SIWriteKeyPersistResponse, dto::Verbs::K23SI_WRITE_KEY_PERSIST>
+        (FastDeadline(_config.writeKeyPersistTimeout()), request)
+            .then([this, request=std::move(request)] (auto&& response) {
+                auto& [status, _] = response;
+                if (!status.is2xxOK()) {
+                    K2LOG_E(log::skvsvr, "write key persist failed for request {}", request);
+                }
+                return seastar::make_ready_future();
+            });
 }
 
 seastar::future<std::tuple<Status, dto::K23SITxnFinalizeResponse>>

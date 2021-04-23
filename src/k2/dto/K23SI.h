@@ -262,22 +262,44 @@ struct K23SIWriteResponse {
 
 struct K23SIWriteKeyRequest {
     Partition::PVID pvid;   // the partition version ID. Should be coming from an up-to-date partition map
+    String collectionName;
     K23SI_MTR mtr;  // the MTR for the issuing transaction
-    Key trh;    // The TRH key is used to find the K2 node which owns a transaction
-    Key key;    // the key for the write    TODO: since cpo use the name key to route, we will have to change it
+    Key key;    // The TRH key is used to find the K2 node which owns a transaction, using the name 'key' is for routing
+    Key writeKey;    // the key for the write
     uint64_t request_id;    // used to identify each write operation
 
     K23SIWriteKeyRequest() = default;
-    K23SIWriteKeyRequest(Partition::PVID _pvid, K23SI_MTR _mtr, Key _trh, Key _key, uint64_t id) :
-        pvid(std::move(_pvid)), mtr(std::move(_mtr)) ,trh(std::move(_trh)), key(std::move(_key)), request_id(id) {}
+    K23SIWriteKeyRequest(Partition::PVID _pvid, String _cname, K23SI_MTR _mtr, Key _key, Key _writeKey, uint64_t id) :
+        pvid(std::move(_pvid)), collectionName(std::move(_cname)), mtr(std::move(_mtr)) ,key(std::move(_key)), writeKey(std::move(_writeKey)), request_id(id) {}
 
-    K2_PAYLOAD_FIELDS(pvid, mtr, trh, key, request_id);
-    K2_DEF_FMT(K23SIWriteKeyRequest, pvid, mtr, trh, key, request_id);
+    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, key, writeKey, request_id);
+    K2_DEF_FMT(K23SIWriteKeyRequest, pvid, collectionName, mtr, key, writeKey, request_id);
 };
 
 struct K23SIWriteKeyResponse {
     K2_PAYLOAD_EMPTY;
     K2_DEF_FMT(K23SIWriteKeyResponse);
+};
+
+struct K23SIWriteKeyPersistRequest {
+    Partition::PVID pvid;   // the partition version ID. Should be coming from an up-to-date partition map
+    String collectionName;
+    K23SI_MTR mtr;  // the MTR for the issuing transaction
+    Key key;    // The TRH key is used to find the K2 node which owns a transaction, using the name 'key' is for routing
+    Key writeKey;    // the key for the write
+    uint64_t request_id;    // used to identify each write operation
+
+    K23SIWriteKeyPersistRequest() = default;
+    K23SIWriteKeyPersistRequest(Partition::PVID _pvid, String _cname, K23SI_MTR _mtr, Key _key, Key _writeKey, uint64_t id) :
+            pvid(std::move(_pvid)), collectionName(std::move(_cname)), mtr(std::move(_mtr)) ,key(std::move(_key)), writeKey(std::move(_writeKey)), request_id(id) {}
+
+    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, key, writeKey, request_id);
+    K2_DEF_FMT(K23SIWriteKeyPersistRequest, pvid, collectionName, mtr, key, writeKey, request_id);
+};
+
+struct K23SIWriteKeyPersistResponse {
+    K2_PAYLOAD_EMPTY;
+    K2_DEF_FMT(K23SIWriteKeyPersistResponse);
 };
 
 struct K23SIQueryRequest {

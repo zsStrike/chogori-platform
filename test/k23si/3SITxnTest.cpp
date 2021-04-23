@@ -180,7 +180,8 @@ private:
             .request_id = id++,
             .key = key,
             .value = std::move(record.storage),
-            .fieldsForPartialUpdate = std::vector<uint32_t>()
+            .fieldsForPartialUpdate = std::vector<uint32_t>(),
+            .writeAsync = false
         };
 
         switch (errOpt) {

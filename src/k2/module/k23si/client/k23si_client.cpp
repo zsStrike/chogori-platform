@@ -194,6 +194,7 @@ std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::makeWriteRequest(dto::SKVRe
 std::unique_ptr<dto::K23SIWriteKeyRequest> K2TxnHandle::makeWriteKeyRequest(dto::K23SIWriteRequest& request) {
     return std::make_unique<dto::K23SIWriteKeyRequest>(
         dto::Partition::PVID(),
+        request.collectionName,
         request.mtr,
         request.trh,
         request.key,
@@ -220,7 +221,8 @@ std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::makePartialUpdateRequest(dt
             _client->write_ops,
             std::move(key),
             record.storage.share(),
-            fieldsForPartialUpdate
+            fieldsForPartialUpdate,
+            false   // TODO: should be modified
         });
     }
 

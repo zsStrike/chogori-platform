@@ -205,7 +205,8 @@ private:
             .request_id = id++,
             .key = key,
             .value = std::move(record.storage),
-            .fieldsForPartialUpdate = std::vector<uint32_t>()
+            .fieldsForPartialUpdate = std::vector<uint32_t>(),
+            .writeAsync = false
         };
         return RPC().callRPC<dto::K23SIWriteRequest, dto::K23SIWriteResponse>(dto::Verbs::K23SI_WRITE, request, *part.preferredEndpoint, 100ms);
     }

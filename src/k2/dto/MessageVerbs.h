@@ -55,6 +55,8 @@ enum Verbs : k2::Verb {
     K23SI_WRITE,
     // K23SI write key
     K23SI_WRITE_KEY,
+    // K23SI write key persist
+    K23SI_WRITE_KEY_PERSIST,
     // K23SI push operation
     K23SI_TXN_PUSH,
     // K23SI end transaction
