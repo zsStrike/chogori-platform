@@ -265,6 +265,7 @@ public:
         }
 
         _client->write_ops++;
+        _ongoing_ops++;
 
         if (writeAsync) {
             std::unique_ptr<dto::K23SIWriteKeyRequest> writeKeyRequest = makeWriteKeyRequest(*request);
@@ -302,7 +303,6 @@ public:
                 });
         }
 
-        _ongoing_ops++;
         return _cpo_client->PartitionRequest
             <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
             (_options.deadline, *request).

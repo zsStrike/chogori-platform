@@ -265,6 +265,8 @@ void K23SIPartitionModule::_unregisterVerbs() {
     RPC().registerMessageObserver(dto::Verbs::K23SI_READ, nullptr);
     RPC().registerMessageObserver(dto::Verbs::K23SI_QUERY, nullptr);
     RPC().registerMessageObserver(dto::Verbs::K23SI_WRITE, nullptr);
+    RPC().registerMessageObserver(dto::Verbs::K23SI_WRITE_KEY, nullptr);
+    RPC().registerMessageObserver(dto::Verbs::K23SI_WRITE_KEY_PERSIST, nullptr);
     RPC().registerMessageObserver(dto::Verbs::K23SI_TXN_PUSH, nullptr);
     RPC().registerMessageObserver(dto::Verbs::K23SI_TXN_END, nullptr);
     RPC().registerMessageObserver(dto::Verbs::K23SI_TXN_HEARTBEAT, nullptr);
