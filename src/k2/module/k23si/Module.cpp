@@ -1009,7 +1009,10 @@ K23SIPartitionModule::handleWrite(dto::K23SIWriteRequest&& request, FastDeadline
                     K2LOG_D(log::skvsvr, "failed creating TR for {}", request.mtr);
                     return RPCResponse(std::move(status), dto::K23SIWriteResponse{});
                 }
-
+                if (request.writeAsync) {
+                    auto& tr = _txnMgr.getTxnRecord({request.trh, request.mtr});
+                    tr.writeAsync = true;
+                }
                 K2LOG_D(log::skvsvr, "succeeded creating TR. Processing write for {}", request.mtr);
                 return _processWrite(std::move(request), deadline);
             });
@@ -1141,10 +1144,15 @@ K23SIPartitionModule::handleWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& r
             request.writeKey, request.request_id, request.mtr);
 
     TxnId txnId {.trh=request.key, .mtr=request.mtr};
-    auto writeKeysStatus = _txnMgr.getTxnRecord(std::move(txnId)).writeKeysStatus;
+    auto& tr = _txnMgr.getTxnRecord(std::move(txnId));
+    auto& writeKeysStatus = tr.writeKeysStatus;
     auto it = writeKeysStatus.find(request.writeKey);
     // case 1: the key not in the writeKeysStatus map
     if (it == writeKeysStatus.end()) {
+        // the transaction is force aborted, and processing the finalization task in background
+        if (tr.state == TxnRecordState::ForceAborted || tr.state == TxnRecordState::AbortedPIP || tr.state == TxnRecordState::Aborted) {
+            return RPCResponse(dto::K23SIStatus::OK("the write key is finalizaed by finalization task"), dto::K23SIWriteKeyPersistResponse());
+        }
         return RPCResponse(dto::K23SIStatus::KeyNotFound("the write key does not in writeKeysStatus map"), dto::K23SIWriteKeyPersistResponse());
     }
     // case 2: the key is in tracking

@@ -53,8 +53,14 @@ struct TxnRecord {
     // that the corresponding write intents are converted appropriately
     std::vector<dto::Key> writeKeys;
 
-    //
-    std::unordered_map<dto::Key, WriteKeyStatus> writeKeysStatus;
+    // determine whether the transaction is processing the write requests in an async manner
+    bool writeAsync = false;
+
+    // used to track the finalization task status
+    seastar::future<Status> finalizeTaskFut = seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
+
+    // used to track each write key status, e.g. request_id, persisted
+    std::map<dto::Key, WriteKeyStatus> writeKeysStatus;
 
     // Expiry time point for retention window - these are driven off each TSO clock update
     dto::Timestamp rwExpiry;
