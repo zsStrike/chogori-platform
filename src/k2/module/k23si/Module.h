@@ -223,6 +223,10 @@ private: // methods
     template <typename ResponseT>
     seastar::future<std::tuple<Status, ResponseT>> _respondAfterFlush(std::tuple<Status, ResponseT>&& tuple);
 
+    // Helper method which generates an RPCResponce chained with a  flush job performed asyncly
+    template <typename ResponseT>
+    seastar::future<std::tuple<Status, ResponseT>> _respondWithFlushAsync(std::tuple<Status, ResponseT>&& tuple);
+
     // helper used to process the designate TRH part of a write request
     seastar::future<Status> _designateTRH(dto::TxnId txnId);
 
@@ -231,8 +235,7 @@ private: // methods
     _processWrite(dto::K23SIWriteRequest&& request, FastDeadline deadline);
 
     // helper to send write key persist message to trh
-    seastar::future<>
-    _notifyWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& request);
+    seastar::future<> _notifyWriteKeyPersist(String collectionName, dto::K23SI_MTR mtr, dto::Key key, dto::Key writeKey, uint64_t reuqest_id, FastDeadline deadline);
 
     void _unregisterVerbs();
 
