@@ -39,12 +39,6 @@ namespace k2 {
 
 namespace nsbi = boost::intrusive;
 
-// to determine whether the write key req is persisted
-struct WriteKeyStatus {
-    uint64_t request_id;
-    bool persisted;
-};
-
 // A Transaction record
 struct TxnRecord {
     dto::TxnId txnId;
@@ -56,11 +50,14 @@ struct TxnRecord {
     // determine whether the transaction is processing the write requests in an async manner
     bool writeAsync = false;
 
+    bool finalizeInForceAborted = false;
+    seastar::promise<Status> isFinalizeFinished;
+
     // used to track the finalization task status
     seastar::future<Status> finalizeTaskFut = seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
 
     // used to track each write key status, e.g. request_id, persisted
-    std::map<dto::Key, WriteKeyStatus> writeKeysStatus;
+    std::map<dto::Key, dto::WriteKeyStatus> writeKeysStatus;
 
     // Expiry time point for retention window - these are driven off each TSO clock update
     dto::Timestamp rwExpiry;
@@ -179,7 +176,7 @@ private:  // methods driving the state machine
     seastar::future<Status> _endHelper(TxnRecord& rec);
 
     // Helper method which finalizes a transaction
-    seastar::future<Status> _finalizeTransaction(TxnRecord& rec, FastDeadline deadline);
+    seastar::future<Status> _finalizeTransaction(TxnRecord& rec, FastDeadline deadline, bool finalizeInForceAborted=false);
 
     // helper handler for retries of endTxn requests
     seastar::future<std::tuple<Status, dto::K23SITxnEndResponse>>

@@ -160,6 +160,7 @@ TxnManager::inspectTxns() {
         dto::K23SIInspectTxnResponse resp{
             txn.txnId,
             txn.writeKeys,
+            txn.writeKeysStatus,
             txn.rwExpiry,
             txn.syncFinalize,
             txn.state};
@@ -180,6 +181,7 @@ seastar::future<std::tuple<Status, dto::K23SIInspectTxnResponse>> TxnManager::in
     dto::K23SIInspectTxnResponse response{
         it->second.txnId,
         it->second.writeKeys,
+        it->second.writeKeysStatus,
         it->second.rwExpiry,
         it->second.syncFinalize,
         it->second.state};
@@ -347,7 +349,9 @@ TxnManager::endTxn(dto::K23SITxnEndRequest&& request) {
         return RPCResponse(dto::K23SIStatus::AbortRequestTooOld("request is outside retention window"), dto::K23SITxnEndResponse{});
     }
 
-    rec.writeKeys = std::move(request.writeKeys);
+    if (!rec.writeAsync) {
+        rec.writeKeys = std::move(request.writeKeys);
+    }
     rec.syncFinalize = request.syncFinalize;
     rec.timeToFinalize = request.timeToFinalize;
     rec.finalizeAction = request.action;
@@ -568,14 +572,25 @@ seastar::future<Status> TxnManager::_forceAborted(TxnRecord& rec) {
     rec.unlinkHB(_hblist);
     // if write async, we could now do the finalization task in background
     if (rec.writeAsync) {
+        rec.finalizeInForceAborted = true;
+        rec.finalizeAction = dto::EndAction::Abort;
         // fill the writeKeys vector
+        rec.writeKeys.erase(rec.writeKeys.begin(), rec.writeKeys.end());
         for(auto& status : rec.writeKeysStatus) {
             rec.writeKeys.push_back(status.first);
         }
         auto timeout = (10s + _config.writeTimeout() * rec.writeKeys.size()) / _config.finalizeBatchSize();
-        rec.finalizeTaskFut = rec.finalizeTaskFut.then([this, &rec, timeout] (auto&& status) {
-            (void) status;
-            return _finalizeTransaction(rec, FastDeadline(timeout));
+        // we're doing async finalize. enqueue in background tasks
+        _addBgTask(rec, [this, &rec, timeout] {
+            K2LOG_D(log::skvsvr, "preparing the finalization in force aborted state for TR {}", rec);
+            return _finalizeTransaction(rec, FastDeadline(timeout), true)
+                .then([this, &rec] (auto&& status){
+                    K2LOG_D(log::skvsvr, "finalize in force aborted async status: {}", status);
+                    if (!status.is2xxOK()) {
+                        K2LOG_D(log::skvsvr, "finalize in force aborted async failed");
+                    }
+                    rec.isFinalizeFinished.set_value(status);
+                }).discard_result();
         });
     }
     // we still want to keep the record inked in the retention window since we want to take action if it goes past the RWE
@@ -588,25 +603,21 @@ seastar::future<Status> TxnManager::_commitPIP(TxnRecord& rec) {
     rec.state = dto::TxnRecordState::CommittedPIP;
     // if write async, we should wait until all write keys are persisted successfully
     if (rec.writeAsync) {
+        bool isAllKeysPersisted = true;
+        for (auto& status : rec.writeKeysStatus) {
+            if (!status.second.persisted) {
+                isAllKeysPersisted = false;
+                break;
+            }
+        }
+        if (!isAllKeysPersisted) {
+            return seastar::make_ready_future<Status>(dto::K23SIStatus::ConditionFailed("not the all write keys in participants are persisted"));
+        }
         // fill the writeKeys vector
         rec.writeKeys.erase(rec.writeKeys.begin(), rec.writeKeys.end());
         for(auto& status : rec.writeKeysStatus) {
             rec.writeKeys.push_back(status.first);
         }
-        auto timeout = (10s + _config.writeKeyPersistTimeout() * rec.writeKeys.size());
-        return seastar::sleep(timeout).then([this, &rec] () {
-            bool isAllKeysPersisted = true;
-            for (auto& status : rec.writeKeysStatus) {
-                if (!status.second.persisted) {
-                    isAllKeysPersisted = false;
-                    break;
-                }
-            }
-            if (!isAllKeysPersisted) {
-                return seastar::make_ready_future<Status>(dto::K23SIStatus::ConditionFailed("not the all write keys in participants are persisted"));
-            }
-            return _endPIPHelper(rec);
-        });
     }
     return _endPIPHelper(rec);
 }
@@ -616,16 +627,12 @@ seastar::future<Status> TxnManager::_abortPIP(TxnRecord& rec) {
     rec.finalizeAction = dto::EndAction::Abort;
     rec.state = dto::TxnRecordState::AbortedPIP;
     // if write async, we could now do the finalization task in background
-    if (rec.writeAsync) {
+    if (rec.writeAsync && !rec.finalizeInForceAborted) {
         // fill the writeKeys vector
+        rec.writeKeys.erase(rec.writeKeys.begin(), rec.writeKeys.end());
         for(auto& status : rec.writeKeysStatus) {
             rec.writeKeys.push_back(status.first);
         }
-        auto timeout = (10s + _config.writeTimeout() * rec.writeKeys.size()) / _config.finalizeBatchSize();
-        rec.finalizeTaskFut = rec.finalizeTaskFut.then([this, &rec, timeout] (auto&& status) {
-            (void) status;
-            return _finalizeTransaction(rec, FastDeadline(timeout));
-        });
     }
     return _endPIPHelper(rec);
 }
@@ -638,15 +645,15 @@ seastar::future<Status> TxnManager::_endPIPHelper(TxnRecord& rec) {
     rec.unlinkRW(_rwlist);
 
     auto finfut =  _persistence->append_cont(rec)
-            .then([this, &rec] (auto&& status) {
-                K2LOG_D(log::skvsvr, "persist completed for EndPIP of {} with {}", rec, status);
-                if (!status.is2xxOK()) {
-                    // flush didn't succeed
-                    K2LOG_E(log::skvsvr, "persist failed for EndPIP of {} with {}", rec, status);
-                    return _onAction(TxnRecord::Action::onPersistFail, rec);
-                }
-                return _onAction(TxnRecord::Action::onPersistSucceed, rec);
-            });
+        .then([this, &rec] (auto&& status) {
+            K2LOG_D(log::skvsvr, "persist completed for EndPIP of {} with {}", rec, status);
+            if (!status.is2xxOK()) {
+                // flush didn't succeed
+                K2LOG_E(log::skvsvr, "persist failed for EndPIP of {} with {}", rec, status);
+                return _onAction(TxnRecord::Action::onPersistFail, rec);
+            }
+            return _onAction(TxnRecord::Action::onPersistSucceed, rec);
+        });
     if (rec.syncFinalize) {
         // flush manually here in order to complete the append operation above. Only then can we
         // return the continuation of append
@@ -678,17 +685,27 @@ seastar::future<Status> TxnManager::_endHelper(TxnRecord& rec) {
 
     auto timeout = (10s + _config.writeTimeout() * rec.writeKeys.size()) / _config.finalizeBatchSize();
 
-    // if write async, then the finalization task is processed in background
-    if (rec.writeAsync && rec.state == dto::TxnRecordState::Aborted) {
-        rec.finalizeTaskFut = rec.finalizeTaskFut.then([this, &rec] (auto&& status) {
+    if (rec.finalizeInForceAborted) {
+        return rec.isFinalizeFinished.get_future().then([this, &rec] (auto&& status) {
             if (!status.is2xxOK()) {
-                K2LOG_E(log::skvsvr, "finalization task in background failed for {}", rec);
-                return seastar::make_ready_future<Status>(dto::K23SIStatus::ConditionFailed);
+                K2LOG_E(log::skvsvr, "finalization in force aborted failed with status {}", status);
             }
+            K2LOG_D(log::skvsvr, "finalization in force aborted succeed for TR {}", rec);
             return _onAction(TxnRecord::Action::onFinalizeComplete, rec);
         });
-        return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
     }
+
+    // if write async, then the finalization task is processed in background
+//    if (rec.writeAsync && rec.state == dto::TxnRecordState::Aborted) {
+//        rec.finalizeTaskFut = rec.finalizeTaskFut.then([this, &rec] (auto&& status) {
+//            if (!status.is2xxOK()) {
+//                K2LOG_E(log::skvsvr, "finalization task in background failed for {}", rec);
+//                return seastar::make_ready_future<Status>(dto::K23SIStatus::ConditionFailed);
+//            }
+//            return _onAction(TxnRecord::Action::onFinalizeComplete, rec);
+//        });
+//        return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
+//    }
 
     if (rec.syncFinalize) {
         return _finalizeTransaction(rec, FastDeadline(timeout));
@@ -735,7 +752,7 @@ seastar::future<Status> TxnManager::_finalizedPIP(TxnRecord& rec) {
     return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
 }
 
-seastar::future<Status> TxnManager::_finalizeTransaction(TxnRecord& rec, FastDeadline deadline) {
+seastar::future<Status> TxnManager::_finalizeTransaction(TxnRecord& rec, FastDeadline deadline, bool finalizeInForceAborted) {
     K2LOG_D(log::skvsvr, "Finalizing {}", rec);
     //TODO we need to keep trying to finalize in cases of failures.
     // this needs to be done in a rate-limited fashion. For now, we just try some configurable number of times and give up
@@ -794,15 +811,15 @@ seastar::future<Status> TxnManager::_finalizeTransaction(TxnRecord& rec, FastDea
             }
         );
     })
-    .then_wrapped([this, &rec] (auto&& fut) {
+    .then_wrapped([this, &rec, finalizeInForceAborted] (auto&& fut) {
         if (fut.failed()) {
             K2LOG_W_EXC(log::skvsvr, fut.get_exception(), "Unable to finalize txn {}. Leaving in memory", rec);
             return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
         }
-//        if (rec.writeAsync) {
-//            return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
-//        }
         K2LOG_D(log::skvsvr, "finalize completed for: {}", rec);
+        if (finalizeInForceAborted) {
+            return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
+        }
         return _onAction(TxnRecord::Action::onFinalizeComplete, rec);
     });
 }
