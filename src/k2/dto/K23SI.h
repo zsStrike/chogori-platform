@@ -260,6 +260,15 @@ struct K23SIWriteResponse {
     K2_DEF_FMT(K23SIWriteResponse);
 };
 
+// to determine whether the write key req is persisted
+struct WriteKeyStatus {
+    uint64_t request_id;
+    bool persisted;
+
+    K2_PAYLOAD_FIELDS(request_id, persisted);
+    K2_DEF_FMT(WriteKeyStatus, request_id, persisted);
+};
+
 struct K23SIWriteKeyRequest {
     Partition::PVID pvid;   // the partition version ID. Should be coming from an up-to-date partition map
     String collectionName;

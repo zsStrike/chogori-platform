@@ -69,6 +69,9 @@ struct K23SIInspectTxnResponse {
     // that the corresponding write intents are converted appropriately
     std::vector<dto::Key> writeKeys;
 
+    // used to track each write key status, e.g. request_id, persisted
+    std::map<dto::Key, dto::WriteKeyStatus> writeKeysStatus;
+
     // Expiry time point for retention window - these are driven off each TSO clock update
     dto::Timestamp rwExpiry;
 
@@ -76,8 +79,8 @@ struct K23SIInspectTxnResponse {
 
     TxnRecordState state;
 
-    K2_PAYLOAD_FIELDS(txnId, writeKeys, rwExpiry, state);
-    K2_DEF_FMT(K23SIInspectTxnResponse, txnId, writeKeys, rwExpiry, state);
+    K2_PAYLOAD_FIELDS(txnId, writeKeys, writeKeysStatus, rwExpiry, state);
+    K2_DEF_FMT(K23SIInspectTxnResponse, txnId, writeKeys, writeKeysStatus, rwExpiry, state);
 };
 
 // Requests all WIs on a node for all keys
