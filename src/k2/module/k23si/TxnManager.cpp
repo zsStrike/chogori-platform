@@ -336,7 +336,7 @@ TxnManager::endTxn(dto::K23SITxnEndRequest&& request) {
     }
     // store the write keys into the txnrecord
     TxnRecord& rec = getTxnRecord(dto::TxnId{.trh = std::move(request.key), .mtr = std::move(request.mtr)});
-    if (rec.finalizeAction != dto::EndAction::None) {
+    if (rec.finalizeAction != dto::EndAction::None && !rec.finalizeInForceAborted) {
         // the record indicates we've received an end request already (there is a finalize action)
         // this is only possible if there is a retry or some client bug
         K2LOG_D(log::skvsvr, "TxnEnd retry - transaction already has a finalize action {}", rec)
@@ -580,18 +580,15 @@ seastar::future<Status> TxnManager::_forceAborted(TxnRecord& rec) {
             rec.writeKeys.push_back(status.first);
         }
         auto timeout = (10s + _config.writeTimeout() * rec.writeKeys.size()) / _config.finalizeBatchSize();
-        // we're doing async finalize. enqueue in background tasks
-        _addBgTask(rec, [this, &rec, timeout] {
-            K2LOG_D(log::skvsvr, "preparing the finalization in force aborted state for TR {}", rec);
-            return _finalizeTransaction(rec, FastDeadline(timeout), true)
-                .then([this, &rec] (auto&& status){
-                    K2LOG_D(log::skvsvr, "finalize in force aborted async status: {}", status);
-                    if (!status.is2xxOK()) {
-                        K2LOG_D(log::skvsvr, "finalize in force aborted async failed");
-                    }
-                    rec.isFinalizeFinished.set_value(status);
-                }).discard_result();
-        });
+        K2LOG_D(log::skvsvr, "preparing the finalization in force aborted state for TR {}", rec);
+        auto fut = _finalizeTransaction(rec, FastDeadline(timeout), true)
+            .then([this, &rec] (auto&& status){
+                K2LOG_D(log::skvsvr, "finalize in force aborted async status: {}", status);
+                if (!status.is2xxOK()) {
+                    K2LOG_D(log::skvsvr, "finalize in force aborted async failed");
+                }
+                rec.isFinalizeFinished.set_value(status);
+            });
     }
     // we still want to keep the record inked in the retention window since we want to take action if it goes past the RWE
     return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
@@ -686,13 +683,18 @@ seastar::future<Status> TxnManager::_endHelper(TxnRecord& rec) {
     auto timeout = (10s + _config.writeTimeout() * rec.writeKeys.size()) / _config.finalizeBatchSize();
 
     if (rec.finalizeInForceAborted) {
-        return rec.isFinalizeFinished.get_future().then([this, &rec] (auto&& status) {
-            if (!status.is2xxOK()) {
-                K2LOG_E(log::skvsvr, "finalization in force aborted failed with status {}", status);
-            }
-            K2LOG_D(log::skvsvr, "finalization in force aborted succeed for TR {}", rec);
-            return _onAction(TxnRecord::Action::onFinalizeComplete, rec);
-        });
+        // we're doing async finalize. enqueue in background tasks
+        _addBgTask(rec,
+           [this, &rec] {
+               return rec.isFinalizeFinished.get_future().then([this, &rec] (auto&& status) {
+                   if (!status.is2xxOK()) {
+                       K2LOG_E(log::skvsvr, "finalization in force aborted failed with status {}", status);
+                   }
+                   K2LOG_D(log::skvsvr, "finalization in force aborted succeed for TR {}", rec);
+                   return _onAction(TxnRecord::Action::onFinalizeComplete, rec).discard_result();
+               });
+           });
+        return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
     }
 
     // if write async, then the finalization task is processed in background

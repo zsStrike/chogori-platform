@@ -1236,7 +1236,7 @@ K23SIPartitionModule::_notifyWriteKeyPersist(String collectionName, dto::K23SI_M
     request.writeKey = writeKey;
     request.request_id = request_id;
     return seastar::do_with(std::move(request), [this, deadline] (auto& request) {
-        return _cpo.template PartitionRequest<dto::K23SIWriteKeyPersistRequest, dto::K23SIWriteKeyPersistResponse, dto::Verbs::K23SI_WRITE_KEY_PERSIST>(deadline, request)
+        return _cpo.PartitionRequest<dto::K23SIWriteKeyPersistRequest, dto::K23SIWriteKeyPersistResponse, dto::Verbs::K23SI_WRITE_KEY_PERSIST>(deadline, request)
         .then([this, &request] (auto response) {
             auto& [status, _] = response;
             K2LOG_D(log::skvsvr, "finish the write key persist request {} with status: {}", request, status);
