@@ -359,6 +359,14 @@ TxnManager::endTxn(dto::K23SITxnEndRequest&& request) {
         rec.hasAttemptedCommit = true;
     }
 
+    // to detect if all keys are persisted
+    if (rec.finalizeAction == dto::EndAction::Commit && rec.writeAsync) {
+        if (rec.keysNumber == rec.persistedKeysNumber) {
+            rec.isAllKeysPersisted.set_value(dto::K23SIStatus::OK);
+            K2LOG_D(log::skvsvr, "all keys persisted for tr {}", rec);
+        }
+    }
+
     // and just execute the transition
     return _onAction(action, rec)
         .then([this] (auto&& status) {
@@ -600,21 +608,16 @@ seastar::future<Status> TxnManager::_commitPIP(TxnRecord& rec) {
     rec.state = dto::TxnRecordState::CommittedPIP;
     // if write async, we should wait until all write keys are persisted successfully
     if (rec.writeAsync) {
-        bool isAllKeysPersisted = true;
-        for (auto& status : rec.writeKeysStatus) {
-            if (!status.second.persisted) {
-                isAllKeysPersisted = false;
-                break;
-            }
-        }
-        if (!isAllKeysPersisted) {
-            return seastar::make_ready_future<Status>(dto::K23SIStatus::ConditionFailed("not the all write keys in participants are persisted"));
-        }
         // fill the writeKeys vector
         rec.writeKeys.erase(rec.writeKeys.begin(), rec.writeKeys.end());
         for(auto& status : rec.writeKeysStatus) {
             rec.writeKeys.push_back(status.first);
         }
+        return rec.isAllKeysPersisted.get_future()
+            .then([this, &rec] (auto&& status) {
+                K2LOG_D(log::skvsvr, "all keys persisted with status {} for rec {}", status, rec);
+                return _endPIPHelper(rec);
+            });
     }
     return _endPIPHelper(rec);
 }

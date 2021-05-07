@@ -50,14 +50,19 @@ struct TxnRecord {
     // determine whether the transaction is processing the write requests in an async manner
     bool writeAsync = false;
 
+    // whether to perform the finalization task in background when entering the state ForceAborted
     bool finalizeInForceAborted = false;
-    seastar::promise<Status> isFinalizeFinished;
 
     // used to track the finalization task status
-    seastar::future<Status> finalizeTaskFut = seastar::make_ready_future<Status>(dto::K23SIStatus::OK);
+    seastar::promise<Status> isFinalizeFinished;
+
+    // used to track if all of the write keys are persisted
+    seastar::promise<Status> isAllKeysPersisted;
+    uint64_t keysNumber = 0;
+    uint64_t persistedKeysNumber = 0;
 
     // used to track each write key status, e.g. request_id, persisted
-    std::map<dto::Key, dto::WriteKeyStatus> writeKeysStatus;
+    std::map<dto::Key, dto::WriteKeyStatus> writeKeysStatus = {};
 
     // Expiry time point for retention window - these are driven off each TSO clock update
     dto::Timestamp rwExpiry;

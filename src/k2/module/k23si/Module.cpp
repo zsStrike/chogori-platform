@@ -1133,14 +1133,19 @@ K23SIPartitionModule::handleWriteKey(dto::K23SIWriteKeyRequest&& request) {
             request.writeKey, request.request_id, request.mtr);
 
     TxnId txnId {.trh=request.key, .mtr=request.mtr};
-    auto& writeKeysStatus = _txnMgr.getTxnRecord(std::move(txnId)).writeKeysStatus;
+    auto& tr = _txnMgr.getTxnRecord(std::move(txnId));
+    auto& writeKeysStatus = tr.writeKeysStatus;
     auto it = writeKeysStatus.find(request.writeKey);
     // case 1: first write for the write key
     if (it == writeKeysStatus.end()) {
+        tr.keysNumber++;
         writeKeysStatus.insert({request.writeKey, {request.request_id, false}});
         return RPCResponse(dto::K23SIStatus::Created("created the write key status struct"), dto::K23SIWriteKeyResponse());
     }
     // case 2: not the first write for the write key
+    if (it->second.persisted) {
+        tr.persistedKeysNumber--;
+    }
     it->second.request_id = request.request_id;
     it->second.persisted = false;
     return RPCResponse(dto::K23SIStatus::OK("update the write key status successfully"), dto::K23SIWriteKeyResponse());
@@ -1172,7 +1177,13 @@ K23SIPartitionModule::handleWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& r
     }
     // case 2: the key is in tracking
     if (it->second.request_id == request.request_id) {
+        tr.persistedKeysNumber++;
         it->second.persisted = true;
+    }
+    // update the promise isAllKeysPersisted
+    if (tr.finalizeAction == dto::EndAction::Commit && tr.persistedKeysNumber == tr.keysNumber) {
+        tr.isAllKeysPersisted.set_value(dto::K23SIStatus::OK);
+        K2LOG_D(log::skvsvr, "all keys persisted for tr {}", tr);
     }
     return RPCResponse(dto::K23SIStatus::OK("update the write key status successfully"), dto::K23SIWriteKeyPersistResponse());
 }

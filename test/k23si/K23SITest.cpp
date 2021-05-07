@@ -640,8 +640,6 @@ seastar::future<> runScenario06() {
                         .then([this](auto&& response) {
                             auto& [status, resp] = response;
                             K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
-                            // wait for write key persist request to be finished
-                            return seastar::sleep(50ms);
                         })
                         // Verify there is one WI on node
                         .then([this, &key1] {
@@ -658,8 +656,6 @@ seastar::future<> runScenario06() {
                                 .then([this](auto&& response) {
                                     auto& [status, resp] = response;
                                     K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
-                                    // wait for write key persist request to be finished
-                                    return seastar::sleep(50ms);
                                 });
                         })
                         .then([&] {
@@ -677,10 +673,6 @@ seastar::future<> runScenario06() {
                                     then([this] (auto&& response) {
                                 auto& [status, k2response] = response;
                                 K2EXPECT(log::k23si, k2response.writeKeysStatus.size(), 2);
-                                for(auto& status : k2response.writeKeysStatus) {
-                                    K2LOG_I(log::k23si, "write key: {}, status: {}", status.first, status.second);
-                                    K2EXPECT(log::k23si, status.second.persisted, true);
-                                }
                                 K2EXPECT(log::k23si, status, Statuses::S200_OK);
                                 K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);
                                 return seastar::make_ready_future<>();
@@ -728,8 +720,6 @@ seastar::future<> runScenario07() {
                         .then([this](auto&& response) {
                             auto& [status, resp] = response;
                             K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
-                            // wait for write key persist request to be finished
-                            return seastar::sleep(50ms);
                         })
                         // Verify there is one WI on node
                         .then([this, &key1] {
@@ -746,8 +736,6 @@ seastar::future<> runScenario07() {
                                 .then([this](auto&& response) {
                                     auto& [status, resp] = response;
                                     K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
-                                    // wait for write key persist request to be finished
-                                    return seastar::sleep(50ms);
                                 });
                         })
                         .then([&] {
@@ -765,10 +753,6 @@ seastar::future<> runScenario07() {
                                     then([this] (auto&& response) {
                                 auto& [status, k2response] = response;
                                 K2EXPECT(log::k23si, k2response.writeKeysStatus.size(), 2);
-                                for(auto& status : k2response.writeKeysStatus) {
-                                    K2LOG_I(log::k23si, "write key: {}, status: {}", status.first, status.second);
-                                    K2EXPECT(log::k23si, status.second.persisted, true);
-                                }
                                 K2EXPECT(log::k23si, status, Statuses::S200_OK);
                                 K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);
                                 return seastar::make_ready_future<>();
@@ -781,7 +765,7 @@ seastar::future<> runScenario07() {
                         .then([&](auto&& response) {
                             auto& [status, resp] = response;
                             K2EXPECT(log::k23si, status, dto::K23SIStatus::OK);
-                            return seastar::sleep(200ms).then([this, &key1, &mtr] () {
+                            return seastar::sleep(100ms).then([this, &key1, &mtr] () {
                                 return doRead(key1, mtr, collname);
                             });
                         })
@@ -821,8 +805,6 @@ seastar::future<> runScenario08() {
                         .then([this](auto&& response) {
                             auto& [status, resp] = response;
                             K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
-                            // wait for write key persist request to be finished
-                            return seastar::sleep(50ms);
                         })
                         // Verify there is one WI on node
                         .then([this, &key] {
