@@ -44,7 +44,7 @@ struct TPCCDataGen {
         for (int i=1; i<=100000; ++i) {
             auto item = Item(random, i);
             data.push_back([_item=std::move(item)] (k2::K2TxnHandle& txn) mutable {
-                return writeRow<Item>(_item, txn);
+                return writeRow<Item>(_item, txn, false, false, false);
             });
         }
 
@@ -56,12 +56,12 @@ struct TPCCDataGen {
         for (uint16_t i=1; i <= _customers_per_district(); ++i) {
             auto customer = Customer(random, w_id, d_id, i);
             data.push_back([_customer=std::move(customer)] (k2::K2TxnHandle& txn) mutable {
-                return writeRow<Customer>(_customer, txn);
+                return writeRow<Customer>(_customer, txn, false, false, false);
             });
 
             auto history = History(random, w_id, d_id, i);
             data.push_back([_history=std::move(history)] (k2::K2TxnHandle& txn) mutable {
-                return writeRow<History>(_history, txn);
+                return writeRow<History>(_history, txn, false, false, false);
             });
         }
     }
@@ -83,19 +83,19 @@ struct TPCCDataGen {
             for (int j=1; j<=order.OrderLineCount; ++j) {
                 auto order_line = OrderLine(random, order, j);
                 data.push_back([_order_line=std::move(order_line)] (k2::K2TxnHandle& txn) mutable {
-                    return writeRow<OrderLine>(_order_line, txn);
+                    return writeRow<OrderLine>(_order_line, txn, false, false, false);
                 });
             }
 
             if (i >= 2101) {
                 auto new_order = NewOrder(order);
                 data.push_back([_new_order=std::move(new_order)] (k2::K2TxnHandle& txn) mutable {
-                    return writeRow<NewOrder>(_new_order, txn);
+                    return writeRow<NewOrder>(_new_order, txn, false, false, false);
                 });
             }
 
             data.push_back([_order=std::move(order)] (k2::K2TxnHandle& txn) mutable {
-                return writeRow<Order>(_order, txn);
+                return writeRow<Order>(_order, txn, false, false, false);
             });
         }
     }
@@ -121,20 +121,20 @@ struct TPCCDataGen {
             auto warehouse = Warehouse(random, i);
 
             data.push_back([_warehouse=std::move(warehouse)] (k2::K2TxnHandle& txn) mutable {
-                return writeRow<Warehouse>(_warehouse, txn);
+                return writeRow<Warehouse>(_warehouse, txn, false, false, false);
             });
 
             for (uint32_t j=1; j<100001; ++j) {
                 auto stock = Stock(random, i, j);
                 data.push_back([_stock=std::move(stock)] (k2::K2TxnHandle& txn) mutable {
-                    return writeRow<Stock>(_stock, txn);
+                    return writeRow<Stock>(_stock, txn, false, false, false);
                 });
             }
 
             for (uint16_t j=1; j <= _districts_per_warehouse(); ++j) {
                 auto district = District(random, i, j);
                 data.push_back([_district=std::move(district)] (k2::K2TxnHandle& txn) mutable {
-                    return writeRow<District>(_district, txn);
+                    return writeRow<District>(_district, txn, false, false, false);
                 });
 
                 generateCustomerData(data, random, i, j);

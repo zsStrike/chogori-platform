@@ -46,9 +46,9 @@ static const String tpccCollectionName = "TPCC";
     while (0) \
 
 template<typename ValueType>
-seastar::future<WriteResult> writeRow(ValueType& row, K2TxnHandle& txn, bool erase = false)
+seastar::future<WriteResult> writeRow(ValueType& row, K2TxnHandle& txn, bool erase = false, bool rejectIfExists=false, bool writeAsync=false)
 {
-    return txn.write<ValueType>(row, erase).then([] (WriteResult&& result) {
+    return txn.write<ValueType>(row, erase, rejectIfExists, writeAsync).then([] (WriteResult&& result) {
         if (!result.status.is2xxOK()) {
             K2LOG_D(log::tpcc, "writeRow failed: {}", result.status);
             return seastar::make_exception_future<WriteResult>(std::runtime_error("writeRow failed!"));
@@ -60,8 +60,8 @@ seastar::future<WriteResult> writeRow(ValueType& row, K2TxnHandle& txn, bool era
 
 template<typename ValueType, typename FieldType>
 seastar::future<PartialUpdateResult>
-partialUpdateRow(ValueType& row, FieldType fieldsToUpdate, K2TxnHandle& txn) {
-    return txn.partialUpdate<ValueType>(row, fieldsToUpdate).then([] (PartialUpdateResult&& result) {
+partialUpdateRow(ValueType& row, FieldType fieldsToUpdate, K2TxnHandle& txn, bool writeAsync=false) {
+    return txn.partialUpdate<ValueType>(row, fieldsToUpdate, dto::Key(), writeAsync).then([] (PartialUpdateResult&& result) {
         if (!result.status.is2xxOK()) {
             K2LOG_D(log::tpcc, "partialUpdateRow failed: {}", result.status);
             return seastar::make_exception_future<PartialUpdateResult>(std::runtime_error("partialUpdateRow failed!"));

@@ -203,7 +203,7 @@ std::unique_ptr<dto::K23SIWriteKeyRequest> K2TxnHandle::makeWriteKeyRequest(dto:
 }
 
 std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::makePartialUpdateRequest(dto::SKVRecord& record,
-                    std::vector<uint32_t> fieldsForPartialUpdate, dto::Key&& key) {
+                    std::vector<uint32_t> fieldsForPartialUpdate, dto::Key&& key, bool writeAsync) {
         if (!_write_set.size()) {
             _trh_key = key;
             _trh_collection = record.collectionName;
@@ -222,7 +222,7 @@ std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::makePartialUpdateRequest(dt
             std::move(key),
             record.storage.share(),
             fieldsForPartialUpdate,
-            false   // TODO: should be modified
+            writeAsync
         });
     }
 

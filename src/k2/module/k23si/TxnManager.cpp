@@ -160,7 +160,7 @@ TxnManager::inspectTxns() {
         dto::K23SIInspectTxnResponse resp{
             txn.txnId,
             txn.writeKeys,
-            txn.writeKeysStatus,
+            txn.writeKeyInfoMap,
             txn.rwExpiry,
             txn.syncFinalize,
             txn.state};
@@ -181,7 +181,7 @@ seastar::future<std::tuple<Status, dto::K23SIInspectTxnResponse>> TxnManager::in
     dto::K23SIInspectTxnResponse response{
         it->second.txnId,
         it->second.writeKeys,
-        it->second.writeKeysStatus,
+        it->second.writeKeyInfoMap,
         it->second.rwExpiry,
         it->second.syncFinalize,
         it->second.state};
@@ -584,7 +584,7 @@ seastar::future<Status> TxnManager::_forceAborted(TxnRecord& rec) {
         rec.finalizeAction = dto::EndAction::Abort;
         // fill the writeKeys vector
         rec.writeKeys.erase(rec.writeKeys.begin(), rec.writeKeys.end());
-        for(auto& status : rec.writeKeysStatus) {
+        for(auto& status : rec.writeKeyInfoMap) {
             rec.writeKeys.push_back(status.first);
         }
         auto timeout = (10s + _config.writeTimeout() * rec.writeKeys.size()) / _config.finalizeBatchSize();
@@ -610,7 +610,7 @@ seastar::future<Status> TxnManager::_commitPIP(TxnRecord& rec) {
     if (rec.writeAsync) {
         // fill the writeKeys vector
         rec.writeKeys.erase(rec.writeKeys.begin(), rec.writeKeys.end());
-        for(auto& status : rec.writeKeysStatus) {
+        for(auto& status : rec.writeKeyInfoMap) {
             rec.writeKeys.push_back(status.first);
         }
         return rec.isAllKeysPersisted.get_future()
@@ -630,7 +630,7 @@ seastar::future<Status> TxnManager::_abortPIP(TxnRecord& rec) {
     if (rec.writeAsync && !rec.finalizeInForceAborted) {
         // fill the writeKeys vector
         rec.writeKeys.erase(rec.writeKeys.begin(), rec.writeKeys.end());
-        for(auto& status : rec.writeKeysStatus) {
+        for(auto& status : rec.writeKeyInfoMap) {
             rec.writeKeys.push_back(status.first);
         }
     }

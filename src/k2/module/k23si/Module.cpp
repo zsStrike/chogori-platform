@@ -1134,20 +1134,36 @@ K23SIPartitionModule::handleWriteKey(dto::K23SIWriteKeyRequest&& request) {
 
     TxnId txnId {.trh=request.key, .mtr=request.mtr};
     auto& tr = _txnMgr.getTxnRecord(std::move(txnId));
-    auto& writeKeysStatus = tr.writeKeysStatus;
-    auto it = writeKeysStatus.find(request.writeKey);
-    // case 1: first write for the write key
-    if (it == writeKeysStatus.end()) {
+    auto& writeKeyInfoMap = tr.writeKeyInfoMap;
+    auto it = writeKeyInfoMap.find(request.writeKey);
+    // case 1: first write for the write key and write key request arrived before the write key persiet request
+    if (it == writeKeyInfoMap.end()) {
         tr.keysNumber++;
-        writeKeysStatus.insert({request.writeKey, {request.request_id, false}});
-        return RPCResponse(dto::K23SIStatus::Created("created the write key status struct"), dto::K23SIWriteKeyResponse());
+        writeKeyInfoMap.insert({request.writeKey, {request.request_id, dto::WriteKeyStatus::WriteKey}});
+        return RPCResponse(dto::K23SIStatus::Created("created the write key info struct"), dto::K23SIWriteKeyResponse());
     }
     // case 2: not the first write for the write key
-    if (it->second.persisted) {
+    if (it->second.status == dto::WriteKeyStatus::Persisted) {  // case 2.1: the write key has been persisted
         tr.persistedKeysNumber--;
+        it->second.request_id = request.request_id;
+        it->second.status = dto::WriteKeyStatus::WriteKey;
+    } else if (it->second.status == dto::WriteKeyStatus::WriteKeyPersist) {
+        if (it->second.request_id == request.request_id) {  // case 2.2: the write key has recieved this time write key persisted request
+            tr.persistedKeysNumber++;
+            it->second.status = dto::WriteKeyStatus::Persisted;
+        } else {    // case 2.3: the write key has recieved previous write key persisted request
+            it->second.request_id = request.request_id;
+            it->second.status = dto::WriteKeyStatus::WriteKey;
+        }
+    } else if (it->second.status == dto::WriteKeyStatus::WriteKey) {    // case 2.4: the write key has recieved previous write key request
+        it->second.request_id = request.request_id;
+        it->second.status = dto::WriteKeyStatus::WriteKey;
     }
-    it->second.request_id = request.request_id;
-    it->second.persisted = false;
+    // update the promise isAllKeysPersisted
+    if (tr.finalizeAction == dto::EndAction::Commit && tr.persistedKeysNumber == tr.keysNumber) {
+        tr.isAllKeysPersisted.set_value(dto::K23SIStatus::OK);
+        K2LOG_D(log::skvsvr, "all keys persisted for tr {}", tr);
+    }
     return RPCResponse(dto::K23SIStatus::OK("update the write key status successfully"), dto::K23SIWriteKeyResponse());
 }
 
@@ -1165,20 +1181,42 @@ K23SIPartitionModule::handleWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& r
 
     TxnId txnId {.trh=request.key, .mtr=request.mtr};
     auto& tr = _txnMgr.getTxnRecord(std::move(txnId));
-    auto& writeKeysStatus = tr.writeKeysStatus;
-    auto it = writeKeysStatus.find(request.writeKey);
-    // case 1: the key not in the writeKeysStatus map
-    if (it == writeKeysStatus.end()) {
-        // the transaction is force aborted, and processing the finalization task in background
-        if (tr.state == TxnRecordState::ForceAborted || tr.state == TxnRecordState::AbortedPIP || tr.state == TxnRecordState::Aborted) {
+    auto& writeKeyInfoMap = tr.writeKeyInfoMap;
+    auto it = writeKeyInfoMap.find(request.writeKey);
+    // case 1: the key not in the write key info map
+    if (it == writeKeyInfoMap.end()) {
+        // caes 1.1: write key persist request comes before write key request
+        if (tr.finalizeAction == dto::EndAction::None) {
+            tr.keysNumber++;
+            writeKeyInfoMap.insert({request.writeKey, {request.request_id, dto::WriteKeyStatus::WriteKeyPersist}});
+            return RPCResponse(dto::K23SIStatus::Created("created the write key info struct"), dto::K23SIWriteKeyPersistResponse());
+        }
+        // caes 1.2: the txn has entered the ForceAborted state
+        if (tr.finalizeAction == dto::EndAction::Abort) {
             return RPCResponse(dto::K23SIStatus::OK("the write key is finalizaed by finalization task"), dto::K23SIWriteKeyPersistResponse());
         }
+        // case 1.3: key not found error
         return RPCResponse(dto::K23SIStatus::KeyNotFound("the write key does not in writeKeysStatus map"), dto::K23SIWriteKeyPersistResponse());
     }
     // case 2: the key is in tracking
-    if (it->second.request_id == request.request_id) {
-        tr.persistedKeysNumber++;
-        it->second.persisted = true;
+    if (it->second.status == dto::WriteKeyStatus::Persisted) {
+        if (request.request_id > it->second.request_id) {   // case 2.1: a newer write key persist request comes before write key request
+            tr.persistedKeysNumber--;
+            it->second.request_id = request.request_id;
+            it->second.status = dto::WriteKeyStatus::WriteKeyPersist;
+        }
+    } else if (it->second.status == dto::WriteKeyStatus::WriteKey) {
+        if (request.request_id == it->second.request_id) {  // case 2.2: a newer write key persist request comes afetr the write key request
+            tr.persistedKeysNumber++;
+            it->second.status = dto::WriteKeyStatus::Persisted;
+        } else if (request.request_id > it->second.request_id) {  // case 2.3: a newer write key persist request comes afetr the write key request
+            it->second.request_id = request.request_id;
+            it->second.status = dto::WriteKeyStatus::WriteKeyPersist;
+        }
+    } else if (it->second.status == dto::WriteKeyStatus::WriteKeyPersist) {
+        if (request.request_id > it->second.request_id) {   // case 2.4: a newer write key persist request comes before another the write key perist request
+            it->second.request_id = request.request_id;
+        }
     }
     // update the promise isAllKeysPersisted
     if (tr.finalizeAction == dto::EndAction::Commit && tr.persistedKeysNumber == tr.keysNumber) {

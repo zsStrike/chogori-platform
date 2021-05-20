@@ -62,7 +62,7 @@ struct TxnRecord {
     uint64_t persistedKeysNumber = 0;
 
     // used to track each write key status, e.g. request_id, persisted
-    std::map<dto::Key, dto::WriteKeyStatus> writeKeysStatus = {};
+    std::map<dto::Key, dto::WriteKeyInfo> writeKeyInfoMap = {};
 
     // Expiry time point for retention window - these are driven off each TSO clock update
     dto::Timestamp rwExpiry;

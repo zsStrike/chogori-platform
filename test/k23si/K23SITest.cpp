@@ -672,7 +672,7 @@ seastar::future<> runScenario06() {
                             return doRequestTRH(trh, mtr).
                                     then([this] (auto&& response) {
                                 auto& [status, k2response] = response;
-                                K2EXPECT(log::k23si, k2response.writeKeysStatus.size(), 2);
+                                K2EXPECT(log::k23si, k2response.writeKeyInfoMap.size(), 2);
                                 K2EXPECT(log::k23si, status, Statuses::S200_OK);
                                 K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);
                                 return seastar::make_ready_future<>();
@@ -752,7 +752,7 @@ seastar::future<> runScenario07() {
                             return doRequestTRH(trh, mtr).
                                     then([this] (auto&& response) {
                                 auto& [status, k2response] = response;
-                                K2EXPECT(log::k23si, k2response.writeKeysStatus.size(), 2);
+                                K2EXPECT(log::k23si, k2response.writeKeyInfoMap.size(), 2);
                                 K2EXPECT(log::k23si, status, Statuses::S200_OK);
                                 K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);
                                 return seastar::make_ready_future<>();
@@ -821,10 +821,10 @@ seastar::future<> runScenario08() {
                             return doRequestTRH(trh, mtr1).
                                     then([this] (auto&& response) {
                                 auto& [status, k2response] = response;
-                                K2EXPECT(log::k23si, k2response.writeKeysStatus.size(), 1);
-                                for(auto& status : k2response.writeKeysStatus) {
+                                K2EXPECT(log::k23si, k2response.writeKeyInfoMap.size(), 1);
+                                for(auto& status : k2response.writeKeyInfoMap) {
                                     K2LOG_I(log::k23si, "write key: {}, status: {}", status.first, status.second);
-                                    K2EXPECT(log::k23si, status.second.persisted, true);
+                                    K2EXPECT(log::k23si, status.second.status, dto::WriteKeyStatus::Persisted);
                                 }
                                 K2EXPECT(log::k23si, status, Statuses::S200_OK);
                                 K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);

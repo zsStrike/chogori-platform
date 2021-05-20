@@ -195,7 +195,7 @@ private:
     }
 
     std::unique_ptr<dto::K23SIWriteRequest> makePartialUpdateRequest(dto::SKVRecord& record,
-            std::vector<uint32_t> fieldsForPartialUpdate, dto::Key&& key);
+            std::vector<uint32_t> fieldsForPartialUpdate, dto::Key&& key, bool writeAsync=false);
 
     void prepareQueryRequest(Query& query);
 
@@ -325,7 +325,7 @@ public:
 
     template <typename T>
     seastar::future<PartialUpdateResult> partialUpdate(T& record, std::vector<k2::String> fieldsName,
-                                                       dto::Key key=dto::Key()) {
+                                                       dto::Key key=dto::Key(), bool writeAsync=false) {
         std::vector<uint32_t> fieldsForPartialUpdate;
         bool find = false;
         for (std::size_t i = 0; i < fieldsName.size(); ++i) {
@@ -341,13 +341,14 @@ public:
                     PartialUpdateResult(dto::K23SIStatus::BadParameter("error parameter: fieldsForPartialUpdate")) );
         }
 
-        return partialUpdate(record, std::move(fieldsForPartialUpdate), std::move(key));
+        return partialUpdate(record, std::move(fieldsForPartialUpdate), std::move(key), writeAsync);
     }
 
     template <typename T>
     seastar::future<PartialUpdateResult> partialUpdate(T& record,
                                                        std::vector<uint32_t> fieldsForPartialUpdate,
-                                                       dto::Key key=dto::Key()) {
+                                                       dto::Key key=dto::Key(),
+                                                       bool writeAsync=false) {
         if (!_valid) {
             return seastar::make_exception_future<PartialUpdateResult>(K23SIClientException("Invalid use of K2TxnHandle"));
         }
@@ -363,7 +364,7 @@ public:
                 key = record.getKey();
             }
 
-            request = makePartialUpdateRequest(record, fieldsForPartialUpdate, std::move(key));
+            request = makePartialUpdateRequest(record, fieldsForPartialUpdate, std::move(key), writeAsync);
         } else {
             SKVRecord skv_record(record.collectionName, record.schema);
             record.__writeFields(skv_record);
@@ -371,14 +372,49 @@ public:
                 key = skv_record.getKey();
             }
 
-            request = makePartialUpdateRequest(skv_record, fieldsForPartialUpdate, std::move(key));
+            request = makePartialUpdateRequest(skv_record, fieldsForPartialUpdate, std::move(key), writeAsync);
         }
         if (request == nullptr) {
             return seastar::make_ready_future<PartialUpdateResult> (
                     PartialUpdateResult(dto::K23SIStatus::BadParameter("error makePartialUpdateRequest()")) );
         }
 
-        // TODO: write async method should be here
+        if (writeAsync) {
+            std::unique_ptr<dto::K23SIWriteKeyRequest> writeKeyRequest = makeWriteKeyRequest(*request);
+            return seastar::when_all(
+                    _cpo_client->PartitionRequest
+                            <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
+                            (_options.deadline, *request),
+                    _cpo_client->PartitionRequest
+                            <dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse, dto::Verbs::K23SI_WRITE_KEY>
+                            (_options.deadline, *writeKeyRequest)
+            ).then([this] (auto&& response) {
+                auto& [writeResp, writeKeyResp] = response;
+                auto [writeStatus, writeRes] = writeResp.get0();
+                auto [writeKeyStatus, _] = writeKeyResp.get0();
+
+                _ongoing_ops--;
+
+                checkResponseStatus(writeKeyStatus);
+                if (!writeKeyStatus.is2xxOK()) {
+                    return seastar::make_ready_future<PartialUpdateResult>(PartialUpdateResult(std::move(writeKeyStatus)));
+                }
+
+                checkResponseStatus(writeStatus);
+                if (writeStatus.is2xxOK() && !_heartbeat_timer.isArmed()) {
+                    K2ASSERT(log::skvclient, _cpo_client->collections.find(_trh_collection) != _cpo_client->collections.end(), "collection not present after successful write");
+                    K2LOG_D(log::skvclient, "Starting hb, mtr={}", _mtr);
+                    _heartbeat_interval = _cpo_client->collections[_trh_collection].collection.metadata.heartbeatDeadline / 2;
+                    makeHeartbeatTimer();
+                    _heartbeat_timer.armPeriodic(_heartbeat_interval);
+                }
+                return seastar::make_ready_future<PartialUpdateResult>(PartialUpdateResult(std::move(writeStatus)));
+            }).finally([r1=std::move(writeKeyRequest), r2=std::move(request)] () {
+                (void) r1;
+                (void) r2;
+            });
+        }
+
         return _cpo_client->PartitionRequest
             <dto::K23SIWriteRequest, dto::K23SIWriteResponse, dto::Verbs::K23SI_WRITE>
             (_options.deadline, *request).
