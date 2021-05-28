@@ -206,22 +206,79 @@ struct K23SIWriteRequest {
     Key key; // the key for the write
     SKVRecord::Storage value; // the value of the write
     std::vector<uint32_t> fieldsForPartialUpdate; // if size() > 0 then this is a partial update
+    bool writeAsync = false; // whether the write request is persisted asynchronously
 
     K23SIWriteRequest() = default;
     K23SIWriteRequest(PVID _pvid, String cname, K23SI_MTR _mtr, Key _trh, String _trhCollection, bool _isDelete,
                       bool _designateTRH, bool _rejectIfExists, uint64_t id, Key _key, SKVRecord::Storage _value,
-                      std::vector<uint32_t> _fields) :
+                      std::vector<uint32_t> _fields, bool _writeAsync) :
         pvid(std::move(_pvid)), collectionName(std::move(cname)), mtr(std::move(_mtr)), trh(std::move(_trh)), trhCollection(std::move(_trhCollection)),
         isDelete(_isDelete), designateTRH(_designateTRH), rejectIfExists(_rejectIfExists), request_id(id),
-        key(std::move(_key)), value(std::move(_value)), fieldsForPartialUpdate(std::move(_fields)) {}
+        key(std::move(_key)), value(std::move(_value)), fieldsForPartialUpdate(std::move(_fields)), writeAsync(_writeAsync) {}
 
-    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, trh, trhCollection, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate);
-    K2_DEF_FMT(K23SIWriteRequest, pvid, collectionName, mtr, trh, trhCollection, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate);
+    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, trh, trhCollection, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate, writeAsync);
+    K2_DEF_FMT(K23SIWriteRequest, pvid, collectionName, mtr, trh, trhCollection, isDelete, designateTRH, rejectIfExists, request_id, key, value, fieldsForPartialUpdate, writeAsync);
 };
 
 struct K23SIWriteResponse {
     K2_PAYLOAD_EMPTY;
     K2_DEF_FMT(K23SIWriteResponse);
+};
+
+K2_DEF_ENUM(WriteKeyStatus,
+    WriteKey,           // get the write key request
+    WriteKeyPersist,    // get the write key persist request
+    Persisted);         // get the write key request & write key persist request
+
+// to determine whether the write key req is persisted
+struct WriteKeyInfo {
+    uint64_t request_id;
+    WriteKeyStatus status;
+
+    K2_PAYLOAD_FIELDS(request_id, status);
+    K2_DEF_FMT(WriteKeyInfo, request_id, status);
+};
+
+struct K23SIWriteKeyRequest {
+    PVID pvid;   // the partition version ID. Should be coming from an up-to-date partition map
+    String collectionName;
+    K23SI_MTR mtr;  // the MTR for the issuing transaction
+    Key key;    // The TRH key is used to find the K2 node which owns a transaction, using the name 'key' is for routing
+    Key writeKey;    // the key for the write
+    uint64_t request_id;    // used to identify each write operation
+
+    K23SIWriteKeyRequest() = default;
+    K23SIWriteKeyRequest(PVID _pvid, String _cname, K23SI_MTR _mtr, Key _key, Key _writeKey, uint64_t id) :
+        pvid(std::move(_pvid)), collectionName(std::move(_cname)), mtr(std::move(_mtr)) ,key(std::move(_key)), writeKey(std::move(_writeKey)), request_id(id) {}
+
+    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, key, writeKey, request_id);
+    K2_DEF_FMT(K23SIWriteKeyRequest, pvid, collectionName, mtr, key, writeKey, request_id);
+};
+
+struct K23SIWriteKeyResponse {
+    K2_PAYLOAD_EMPTY;
+    K2_DEF_FMT(K23SIWriteKeyResponse);
+};
+
+struct K23SIWriteKeyPersistRequest {
+    PVID pvid;   // the partition version ID. Should be coming from an up-to-date partition map
+    String collectionName;
+    K23SI_MTR mtr;  // the MTR for the issuing transaction
+    Key key;    // The TRH key is used to find the K2 node which owns a transaction, using the name 'key' is for routing
+    Key writeKey;    // the key for the write
+    uint64_t request_id;    // used to identify each write operation
+
+    K23SIWriteKeyPersistRequest() = default;
+    K23SIWriteKeyPersistRequest(PVID _pvid, String _cname, K23SI_MTR _mtr, Key _key, Key _writeKey, uint64_t id) :
+            pvid(std::move(_pvid)), collectionName(std::move(_cname)), mtr(std::move(_mtr)) ,key(std::move(_key)), writeKey(std::move(_writeKey)), request_id(id) {}
+
+    K2_PAYLOAD_FIELDS(pvid, collectionName, mtr, key, writeKey, request_id);
+    K2_DEF_FMT(K23SIWriteKeyPersistRequest, pvid, collectionName, mtr, key, writeKey, request_id);
+};
+
+struct K23SIWriteKeyPersistResponse {
+    K2_PAYLOAD_EMPTY;
+    K2_DEF_FMT(K23SIWriteKeyPersistResponse);
 };
 
 struct K23SIQueryRequest {

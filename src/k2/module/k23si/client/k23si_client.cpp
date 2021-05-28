@@ -156,7 +156,7 @@ seastar::future<ReadResult<dto::SKVRecord>> K2TxnHandle::read(dto::Key key, Stri
 
 
 std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::_makeWriteRequest(dto::SKVRecord& record, bool erase,
-                                                                      bool rejectIfExists) {
+                                                                      bool rejectIfExists, bool writeAsync) {
     for (const String& key : record.partitionKeys) {
         if (key == "") {
             throw K23SIClientException("Partition key field not set for write request");
@@ -187,12 +187,24 @@ std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::_makeWriteRequest(dto::SKVR
         _client->write_ops,
         key,
         record.storage.share(),
-        std::vector<uint32_t>()
+        std::vector<uint32_t>(),
+        writeAsync
+    );
+}
+
+std::unique_ptr<dto::K23SIWriteKeyRequest> K2TxnHandle::_makeWriteKeyRequest(dto::K23SIWriteRequest& request) {
+    return std::make_unique<dto::K23SIWriteKeyRequest>(
+        dto::PVID(),
+        request.collectionName,
+        request.mtr,
+        request.trh,
+        request.key,
+        request.request_id
     );
 }
 
 std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::_makePartialUpdateRequest(dto::SKVRecord& record,
-                    std::vector<uint32_t> fieldsForPartialUpdate, dto::Key&& key) {
+                    std::vector<uint32_t> fieldsForPartialUpdate, dto::Key&& key, bool writeAsync) {
         bool isTRH = !_trh_key.has_value();
         if (isTRH) {
             _trh_key = key;
@@ -211,7 +223,8 @@ std::unique_ptr<dto::K23SIWriteRequest> K2TxnHandle::_makePartialUpdateRequest(d
             _client->write_ops,
             std::move(key),
             record.storage.share(),
-            fieldsForPartialUpdate
+            fieldsForPartialUpdate,
+            writeAsync
         });
     }
 

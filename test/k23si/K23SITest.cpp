@@ -142,6 +142,9 @@ public:  // application lifespan
             .then([this] { return runScenario03(); })
             .then([this] { return runScenario04(); })
             .then([this] { return runScenario05(); })
+            .then([this] { return runScenario06(); })
+            .then([this] { return runScenario07(); })
+            .then([this] { return runScenario08(); })
             .then([this] {
                 K2LOG_I(log::k23si, "======= All tests passed ========");
                 exitcode = 0;
@@ -182,9 +185,11 @@ private:
     dto::PartitionGetter _pgetter;
     dto::Schema _schema;
 
+    // request id
+    uint64_t request_id = 0;
+
     seastar::future<std::tuple<Status, dto::K23SIWriteResponse>>
-    doWrite(const dto::Key& key, const DataRec& data, const dto::K23SI_MTR& mtr, const dto::Key& trh, const String& cname, bool isDelete, bool isTRH) {
-        uint64_t id = 0;
+    doWrite(const dto::Key& key, const DataRec& data, const dto::K23SI_MTR& mtr, const dto::Key& trh, const String& cname, bool isDelete, bool isTRH, bool writeAsync=false) {
 
         SKVRecord record(cname, std::make_shared<k2::dto::Schema>(_schema));
         record.serializeNext<String>(key.partitionKey);
@@ -193,7 +198,7 @@ private:
         record.serializeNext<String>(data.f2);
         K2LOG_D(log::k23si, "cname={}, key={}, phash={}", cname, key, key.partitionHash())
         auto& part = _pgetter.getPartitionForKey(key);
-        dto::K23SIWriteRequest request {
+        K23SIWriteRequest request {
             .pvid = part.partition->keyRangeV.pvid,
             .collectionName = cname,
             .mtr = mtr,
@@ -202,11 +207,35 @@ private:
             .isDelete = isDelete,
             .designateTRH = isTRH,
             .rejectIfExists = false,
-            .request_id = id++,
+            .request_id = request_id++,
             .key = key,
             .value = std::move(record.storage),
-            .fieldsForPartialUpdate = std::vector<uint32_t>()
+            .fieldsForPartialUpdate = std::vector<uint32_t>(),
+            .writeAsync = writeAsync
         };
+        if (writeAsync) {
+            dto::K23SIWriteKeyRequest writeKeyRequest {
+                .pvid = request.pvid,
+                .collectionName = cname,
+                .mtr = mtr,
+                .key = trh,
+                .writeKey = key,
+                .reuqets_id = request.request_id
+            };
+            return seastar::when_all(
+                    RPC().callRPC<dto::K23SIWriteRequest, dto::K23SIWriteResponse>(dto::Verbs::K23SI_WRITE, request, *part.preferredEndpoint, 100ms),
+                    RPC().callRPC<dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse>(dto::Verbs::K23SI_WRITE_KEY, writeKeyRequest, *part.preferredEndpoint, 100ms)
+            ).then([this, request=std::move(request), &key] (auto&& response) {
+                auto& [writeResp, writeKeyResp] = response;
+                auto [writeKeyStatus, _] = writeKeyResp.get0();
+
+                if (!writeKeyStatus.is2xxOK()) {
+                    K2LOG_D(log::k23si, "write key failed with key {}, status {}", key, writeKeyStatus);
+                }
+
+                return writeResp.get0();
+            });
+        }
         return RPC().callRPC<dto::K23SIWriteRequest, dto::K23SIWriteResponse>(dto::Verbs::K23SI_WRITE, request, *part.preferredEndpoint, 100ms);
     }
 
@@ -582,6 +611,261 @@ seastar::future<> runScenario05() {
                     DataRec d2{"fk2", "f2"};
                     K2EXPECT(log::k23si, value1, d1);
                     K2EXPECT(log::k23si, value2, d2);
+                });
+        });
+}
+
+seastar::future<> runScenario06() {
+    K2LOG_I(log::k23si, "Scenario 06: commit a transaction with multiple async writes");
+
+    // we want to verify the write async request(write key request & write key persist request) and end(C)
+
+    return seastar::make_ready_future()
+        .then([this] {
+            return getTimeNow();
+        })
+        .then([this] (dto::Timestamp&& ts) {
+            return seastar::do_with(
+                dto::K23SI_MTR{
+                    .timestamp = std::move(ts),
+                    .priority = dto::TxnPriority::Medium},
+                dto::Key{.schemaName = "schema", .partitionKey = "s06-pkey1", .rangeKey = "rKey1"},
+                dto::Key{.schemaName = "schema", .partitionKey = "s06-pkey1", .rangeKey = "rKey1"},
+                dto::Key{.schemaName = "schema", .partitionKey = "s06-pkey2", .rangeKey = "rKey2"},
+                DataRec{.f1="field1", .f2="field2"},
+                [this] (dto::K23SI_MTR& mtr, dto::Key& key1, dto::Key& trh, dto::Key& key2, DataRec& rec) {
+                    return doWrite(key1, rec, mtr, trh, collname, false, true, true)
+                        .then([this](auto&& response) {
+                            auto& [status, resp] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
+                        })
+                        // Verify there is one WI on node
+                        .then([this, &key1] {
+                            return doRequestRecords(key1).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.records.size(), 1);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        .then([&] {
+                            return doWrite(key2, rec, mtr, trh, collname, false, false, true)
+                                .then([this](auto&& response) {
+                                    auto& [status, resp] = response;
+                                    K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
+                                });
+                        })
+                        .then([&] {
+                            return doRequestRecords(key2).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.records.size(), 1);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        // Verify the Txn is InProgress
+                        .then([this, &trh, &mtr] {
+                            return doRequestTRH(trh, mtr).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, k2response.writeInfos[collname].size(), 2);
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        .then([&] {
+                            K2LOG_I(log::k23si, "issuing the end request");
+                            return doEnd(trh, mtr, collname, true, {key1, key2});
+                        })
+                        .then([this, &key1, &mtr](auto&& response) {
+                            auto& [status, resp] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::OK);
+                            return doRead(key1, mtr, collname);
+                        })
+                        .then([&rec](auto&& response) {
+                            auto& [status, value] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::OK);
+                            K2EXPECT(log::k23si, value, rec);
+                        });
+            });
+    });
+}
+
+seastar::future<> runScenario07() {
+    K2LOG_I(log::k23si, "Scenario 07: abort a transaction with multiple async writes");
+
+    // we want to verify the write async request(write key request & write key persist request) and end(A)
+
+    return seastar::make_ready_future()
+        .then([this] {
+            return getTimeNow();
+        })
+        .then([this] (dto::Timestamp&& ts) {
+            return seastar::do_with(
+                dto::K23SI_MTR{
+                        .timestamp = std::move(ts),
+                        .priority = dto::TxnPriority::Medium},
+                dto::Key{.schemaName = "schema", .partitionKey = "s07-pkey1", .rangeKey = "rKey1"},
+                dto::Key{.schemaName = "schema", .partitionKey = "s07-pkey1", .rangeKey = "rKey1"},
+                dto::Key{.schemaName = "schema", .partitionKey = "s07-pkey2", .rangeKey = "rKey2"},
+                DataRec{.f1="field1", .f2="field2"},
+                [this] (dto::K23SI_MTR& mtr, dto::Key& key1, dto::Key& trh, dto::Key& key2, DataRec& rec) {
+                    return doWrite(key1, rec, mtr, trh, collname, false, true, true)
+                        .then([this](auto&& response) {
+                            auto& [status, resp] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
+                        })
+                        // Verify there is one WI on node
+                        .then([this, &key1] {
+                            return doRequestRecords(key1).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.records.size(), 1);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        .then([&] {
+                            return doWrite(key2, rec, mtr, trh, collname, false, false, true)
+                                .then([this](auto&& response) {
+                                    auto& [status, resp] = response;
+                                    K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
+                                });
+                        })
+                        .then([&] {
+                            return doRequestRecords(key2).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.records.size(), 1);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        // Verify the Txn is InProgress
+                        .then([this, &trh, &mtr] {
+                            return doRequestTRH(trh, mtr).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, k2response.writeInfos[collname].size(), 2);
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        .then([&] {
+                            K2LOG_I(log::k23si, "issuing the end request");
+                            return doEnd(trh, mtr, collname, false, {key1, key2});
+                        })
+                        .then([&](auto&& response) {
+                            auto& [status, resp] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::OK);
+                            return seastar::sleep(100ms).then([this, &key1, &mtr] () {
+                                return doRead(key1, mtr, collname);
+                            });
+                        })
+                        .then([this](auto&& response) {
+                            auto& [status, value] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::KeyNotFound);
+                        });
+                });
+        });
+}
+
+seastar::future<> runScenario08() {
+    K2LOG_I(log::k23si, "Scenario 08: force abort a transaction with async write");
+
+    // we want to verify the write async request(write key request & write key persist request) and forceaborted
+
+    return seastar::make_ready_future()
+        .then([this] () {
+            return seastar::do_with(
+                dto::K23SI_MTR{},
+                dto::K23SI_MTR{},
+                dto::Key{.schemaName = "schema", .partitionKey = "s08-pkey1", .rangeKey = "rKey1"},
+                dto::Key{.schemaName = "schema", .partitionKey = "s08-pkey1", .rangeKey = "rKey1"},
+                DataRec{.f1="field1-mtr1", .f2="field2-mtr1"},
+                DataRec{.f1="field1-mtr2", .f2="field2-mtr2"},
+                [this] (dto::K23SI_MTR& mtr1, dto::K23SI_MTR& mtr2, dto::Key& key, dto::Key& trh, DataRec& rec1, DataRec& rec2) {
+                    return getTimeNow()
+                        .then([&] (dto::Timestamp&& ts) {
+                            mtr1.timestamp = ts;
+                            mtr1.priority = dto::TxnPriority::Medium;
+                            return doWrite(key, rec1, mtr1, trh, collname, false, true, true);
+                        })
+                        .then([this](auto&& response) {
+                            auto& [status, resp] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
+                        })
+                        // Verify there is one WI on node
+                        .then([this, &key] {
+                            return doRequestRecords(key).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.records.size(), 1);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        // Verify the Txn is InProgress
+                        .then([this, &trh, &mtr1] {
+                            return doRequestTRH(trh, mtr1).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, k2response.writeInfos[collname].size(), 1);
+                                for(auto& info : k2response.writeInfos[collname]) {
+                                    K2LOG_I(log::k23si, "write key: {}, status: {}", info.first, info.second);
+                                }
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::InProgress);
+                                return getTimeNow();
+                            });
+                        })
+                        .then([&] (dto::Timestamp&& ts){
+                            mtr2.timestamp = ts;
+                            mtr2.priority = dto::TxnPriority::Highest;
+                            return doWrite(key, rec2, mtr2, trh, collname, false, true, false)
+                                .then([this](auto&& response) {
+                                    auto& [status, resp] = response;
+                                    K2EXPECT(log::k23si, status, dto::K23SIStatus::Created);
+                                });
+                        })
+                        // Verify the Txn is InProgress
+                        .then([this, &trh, &mtr1] {
+                            return doRequestTRH(trh, mtr1).
+                                    then([this] (auto&& response) {
+                                auto& [status, k2response] = response;
+                                K2EXPECT(log::k23si, status, Statuses::S200_OK);
+                                K2EXPECT(log::k23si, k2response.state, k2::dto::TxnRecordState::ForceAborted);
+                                return seastar::make_ready_future<>();
+                            });
+                        })
+                        .then([&] {
+                            K2LOG_I(log::k23si, "issuing the end request for mtr {}", mtr1);
+                            return doEnd(trh, mtr1, collname, false, {key});
+                        })
+                        .then([&](auto&& response) {
+                            auto& [status, resp] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::OK);
+                        })
+                        .then([&] {
+                            K2LOG_I(log::k23si, "issuing the end request for mtr {}", mtr2);
+                            return doEnd(trh, mtr2, collname, true, {key});
+                        })
+                        .then([&] (auto&& response) {
+                            auto& [status, resp] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::OK);
+                            return seastar::sleep(100ms).then([this, &key, &mtr2] () {
+                                return doRead(key, mtr2, collname);
+                            });
+                        })
+                        .then([&](auto&& response) {
+                            auto& [status, value] = response;
+                            K2EXPECT(log::k23si, status, dto::K23SIStatus::OK);
+                            K2EXPECT(log::k23si, value, rec2);
+                        });
                 });
         });
 }
