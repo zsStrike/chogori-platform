@@ -48,6 +48,23 @@ struct TxnRecord {
     // that the corresponding write intents are converted appropriately
     std::unordered_map<String, std::unordered_set<dto::KeyRangeVersion>> writeRanges;
 
+    // determine whether the transaction is processing the write requests in an async manner
+    bool writeAsync = false;
+
+    // whether to perform the finalization task in background when entering the state ForceAborted
+    bool finalizeInForceAborted = false;
+
+    // used to track the finalization task status
+    seastar::promise<Status> isFinalizeFinished;
+
+    // used to track if all of the write keys are persisted
+    seastar::promise<Status> isAllKeysPersisted;
+    uint64_t keysNumber = 0;
+    uint64_t persistedKeysNumber = 0;
+
+    // used to track each write key status, e.g. request_id, persisted
+    std::unordered_map<String, std::unordered_map<dto::Key, dto::WriteKeyInfo>> writeInfos;
+
     // The TRH key for this record. This is a routing key (think partition key) and we need this here
     // so that txn records can be correctly split/merged when a partition split/merge occurs
     dto::Key trh;
@@ -81,8 +98,8 @@ struct TxnRecord {
     // if this transaction ever attempts to commit, we set this flag.
     bool hasAttemptedCommit{false};
 
-    K2_PAYLOAD_FIELDS(mtr, writeRanges, trh, syncFinalize, state, finalizeAction, hasAttemptedCommit);
-    K2_DEF_FMT(TxnRecord, mtr, writeRanges, trh, rwExpiry, hbExpiry, syncFinalize, timeToFinalize, state, finalizeAction, hasAttemptedCommit);
+    K2_PAYLOAD_FIELDS(mtr, writeRanges, writeAsync, writeInfos, trh, syncFinalize, state, finalizeAction, hasAttemptedCommit);
+    K2_DEF_FMT(TxnRecord, mtr, writeRanges, writeAsync, writeInfos, trh, rwExpiry, hbExpiry, syncFinalize, timeToFinalize, state, finalizeAction, hasAttemptedCommit);
 
     // The last action on this TR (the action that put us into the above state)
     K2_DEF_ENUM_IC(Action,

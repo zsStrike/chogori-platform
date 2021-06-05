@@ -76,6 +76,9 @@ struct K23SIInspectTxnResponse {
     // that the corresponding write intents are converted appropriately
     std::unordered_map<String, std::unordered_set<KeyRangeVersion>> writeRanges;
 
+    // used to track each write key status, e.g. request_id, persisted
+    std::unordered_map<String, std::unordered_map<dto::Key, dto::WriteKeyInfo>> writeInfos;
+
     // Expiry time point for retention window - these are driven off each TSO clock update
     dto::Timestamp rwExpiry;
 
@@ -85,8 +88,8 @@ struct K23SIInspectTxnResponse {
 
     dto::EndAction finalizeAction;
 
-    K2_PAYLOAD_FIELDS(mtr, trh, trhCollection, writeRanges, rwExpiry, state, finalizeAction);
-    K2_DEF_FMT(K23SIInspectTxnResponse, mtr, trh, trhCollection, writeRanges, rwExpiry, state, finalizeAction);
+    K2_PAYLOAD_FIELDS(mtr, trh, trhCollection, writeRanges, writeInfos, rwExpiry, state, finalizeAction);
+    K2_DEF_FMT(K23SIInspectTxnResponse, mtr, trh, trhCollection, writeRanges, writeInfos, rwExpiry, state, finalizeAction);
 };
 
 // Requests all WIs on a node for all keys

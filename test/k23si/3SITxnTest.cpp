@@ -158,7 +158,7 @@ private:
     dto::Key wrongkey{.schemaName = "schema", .partitionKey = "SC00_wrong_pKey1", .rangeKey = "SC00_wrong_rKey1"}; // wrong partition: id(p1) against p2
 
     seastar::future<std::tuple<Status, dto::K23SIWriteResponse>>
-    doWrite(const dto::Key& key, const DataRec& data, const dto::K23SI_MTR mtr, const dto::Key& trh, const String& cname, bool isDelete, bool isTRH, ErrorCaseOpt errOpt) {
+    doWrite(const dto::Key& key, const DataRec& data, const dto::K23SI_MTR mtr, const dto::Key& trh, const String& cname, bool isDelete, bool isTRH, ErrorCaseOpt errOpt, bool writeAsync=false) {
         static uint32_t id = 0;
 
         SKVRecord record(cname, std::make_shared<k2::dto::Schema>(_schema));
@@ -180,7 +180,8 @@ private:
             .request_id = id++,
             .key = key,
             .value = std::move(record.storage),
-            .fieldsForPartialUpdate = std::vector<uint32_t>()
+            .fieldsForPartialUpdate = std::vector<uint32_t>(),
+            .writeAsync = writeAsync
         };
 
         switch (errOpt) {
@@ -484,7 +485,8 @@ seastar::future<> testScenario00() {
                         .request_id=0,
                         .key = key,
                         .value{},
-                        .fieldsForPartialUpdate{}
+                        .fieldsForPartialUpdate{},
+                        .writeAsync = false
                     };
                     return RPC().callRPC<dto::K23SIWriteRequest, dto::K23SIWriteResponse>(dto::Verbs::K23SI_WRITE, request, *_k2Endpoints[0], 100ms)
                     .then([this](auto&& response) {

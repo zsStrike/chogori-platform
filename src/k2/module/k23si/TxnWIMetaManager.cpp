@@ -130,7 +130,7 @@ void TxnWIMetaManager::updateRetentionTimestamp(dto::Timestamp rts) {
     _retentionTs = rts;
 }
 
-Status TxnWIMetaManager::addWrite(dto::K23SI_MTR&& mtr, dto::Key&& key, dto::Key&& trh, String&& trhCollection) {
+Status TxnWIMetaManager::addWrite(dto::K23SI_MTR mtr, dto::Key key, dto::Key trh, String trhCollection) {
     K2LOG_D(log::skvsvr, "Adding write for mtr={}, key={}, trh={}, trhCollection={}", mtr, key, trh, trhCollection);
     auto& rec = _twims[mtr.timestamp];
     if (rec.state == dto::TxnWIMetaState::Created) {

@@ -47,6 +47,9 @@ struct K23SIConfig {
     // timeout for write requests (including potential PUSH operations)
     ConfigDuration writeTimeout{"write_timeout", 150ms};
 
+    // timeout for write key persist requests
+    ConfigDuration writeKeyPersistTimeout{"write_key_persist_timeout", 100ms};
+
     // what is our read cache size in number of entries
     ConfigVar<uint64_t> readCacheSize{"k23si_read_cache_size", 1000000};
 

@@ -95,6 +95,12 @@ public:
     seastar::future<std::tuple<Status, dto::K23SIWriteResponse>>
     handleWrite(dto::K23SIWriteRequest&& request, FastDeadline deadline);
 
+    seastar::future<std::tuple<Status, dto::K23SIWriteKeyResponse>>
+    handleWriteKey(dto::K23SIWriteKeyRequest&& request);
+
+    seastar::future<std::tuple<Status, dto::K23SIWriteKeyPersistResponse>>
+    handleWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& request);
+
     seastar::future<std::tuple<Status, dto::K23SIQueryResponse>>
     handleQuery(dto::K23SIQueryRequest&& request, dto::K23SIQueryResponse&& response, FastDeadline deadline);
 
@@ -230,6 +236,11 @@ private: // methods
     // Helper method which generates an RPCResponce chained after a successful persistence flush
     template <typename ResponseT>
     seastar::future<std::tuple<Status, ResponseT>> _respondAfterFlush(std::tuple<Status, ResponseT>&& tuple);
+
+    template<typename ResponseT>
+    seastar::future<std::tuple<Status, ResponseT>> _respondWithFlushAsync(std::tuple<Status, ResponseT>&& resp);
+
+    seastar::future<> _notifyWriteKeyPersist(String collectionName, dto::K23SI_MTR mtr, dto::Key key, dto::Key writeKey, uint64_t request_id, FastDeadline deadline);
 
     // helper used to process the designate TRH part of a write request
     seastar::future<Status> _designateTRH(dto::K23SI_MTR mtr, dto::Key trhKey);
