@@ -171,6 +171,10 @@ private: // methods
     // validate an incoming write request
     Status _validateWriteRequest(const dto::K23SIWriteRequest& request, const VersionSet& versions);
 
+    // validate write key request and write key persist request
+    template <class RequestT>
+    Status _validateWriteTrackingRequest(const RequestT& request) const;
+
     template <class RequestT>
     Status _validateReadRequest(const RequestT& request) const;
 

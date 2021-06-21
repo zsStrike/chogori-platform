@@ -618,7 +618,6 @@ seastar::future<Status> TxnManager::_forceAborted(TxnRecord& rec) {
                     rec.isFinalizeFinished.set_value(status);
                 });
         });
-        K2LOG_D(log::skvsvr, "preparing the finalization in force aborted state for TR {} after", rec);
     }
     // we still want to keep the record inked in the retention window since we want to take action if it goes past the RWE
     return seastar::make_ready_future<Status>(dto::K23SIStatus::OK);

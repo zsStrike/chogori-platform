@@ -310,8 +310,6 @@ public:
                     return seastar::make_ready_future<WriteResult>(WriteResult(std::move(writeKeyStatus), std::move(writeRes)));
                 }
 
-                _registerRangeForWrite(writeStatus, *request);
-
                 _checkResponseStatus(writeStatus);
                 if (writeStatus.is2xxOK() && !_heartbeat_timer.isArmed()) {
                     K2ASSERT(log::skvclient, _cpo_client->collections.find(_trh_collection) != _cpo_client->collections.end(), "collection not present after successful write");
@@ -423,8 +421,6 @@ public:
                 if (!writeKeyStatus.is2xxOK()) {
                     return seastar::make_ready_future<PartialUpdateResult>(PartialUpdateResult(std::move(writeKeyStatus)));
                 }
-
-                _registerRangeForWrite(writeStatus, *request);
 
                 _checkResponseStatus(writeStatus);
                 if (writeStatus.is2xxOK() && !_heartbeat_timer.isArmed()) {

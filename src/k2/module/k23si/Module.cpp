@@ -167,6 +167,21 @@ Status K23SIPartitionModule::_validateWriteRequest(const dto::K23SIWriteRequest&
 
     return _validateStaleWrite(request, versions);
 }
+
+template <class RequestT>
+Status K23SIPartitionModule::_validateWriteTrackingRequest(const RequestT& request) const {
+    if (!_validateRequestPartition(request)) {
+        // tell client their collection partition is gone
+        return dto::K23SIStatus::RefreshCollection("collection refresh needed in read-type request");
+    }
+
+    if (!_validateRequestPartitionKey(request)) {
+        // do not allow empty partition key
+        return dto::K23SIStatus::BadParameter("missing partition key in write");
+    }
+
+    return dto::K23SIStatus::OK("validate write tracking request passed");
+}
 // ********************** Validators
 
 K23SIPartitionModule::K23SIPartitionModule(dto::CollectionMetadata cmeta, dto::Partition partition) :
@@ -192,12 +207,11 @@ seastar::future<> K23SIPartitionModule::_registerVerbs() {
 
     RPC().registerRPCObserver<dto::K23SIWriteRequest, dto::K23SIWriteResponse>
     (dto::Verbs::K23SI_WRITE, [this](dto::K23SIWriteRequest&& request) {
-        if (request.writeAsync) {
-            return handleWrite(std::move(request), FastDeadline(_config.writeTimeout()))
-                .then([this] (auto&& resp) { return _respondWithFlushAsync(std::move(resp)); });
-        }
+        bool writeAsync = request.writeAsync;
         return handleWrite(std::move(request), FastDeadline(_config.writeTimeout()))
-            .then([this] (auto&& resp) { return _respondAfterFlush(std::move(resp));});
+            .then([this, &writeAsync] (auto&& resp) {
+                return writeAsync ? _respondWithFlushAsync(std::move(resp)) : _respondAfterFlush(std::move(resp));
+            });
     });
 
     RPC().registerRPCObserver<dto::K23SIWriteKeyRequest, dto::K23SIWriteKeyResponse>
@@ -1012,7 +1026,6 @@ K23SIPartitionModule::_respondWithFlushAsync(std::tuple<Status, ResponseT>&& res
             }
         });
     });
-    K2LOG_D(log::skvsvr, "Performing persistence flush asynchromously after");
     return seastar::make_ready_future<std::tuple<Status, ResponseT>>(std::move(resp));
 }
 
@@ -1187,7 +1200,7 @@ K23SIPartitionModule::_notifyWriteKeyPersist(String collectionName, dto::K23SI_M
                 auto& [status, _] = response;
                 K2LOG_D(log::skvsvr, "finish the write key persist request {} with status: {}", request, status);
                 if (!status.is2xxOK()) {
-                    K2LOG_E(log::skvsvr, "write key persist failed for request {}", request);
+                    K2LOG_E(log::skvsvr, "write key persist failed for request {} with status: {}", request, status);
                 }
                 return seastar::make_ready_future();
             });
@@ -1198,10 +1211,10 @@ seastar::future<std::tuple<Status, dto::K23SIWriteKeyResponse>>
 K23SIPartitionModule::handleWriteKey(dto::K23SIWriteKeyRequest&& request) {
     K2LOG_D(log::skvsvr, "received write key request {}", request);
 
-//    Status validateStatus = _validateReadRequest(request);
-//    if (!validateStatus.is2xxOK()) {
-//        return RPCResponse(std::move(validateStatus), dto::K23SIWriteKeyResponse{});
-//    }
+   Status validateStatus = _validateWriteTrackingRequest(request);
+   if (!validateStatus.is2xxOK()) {
+       return RPCResponse(std::move(validateStatus), dto::K23SIWriteKeyResponse{});
+   }
 
     auto& tr = _txnMgr.getTxnRecord(std::move(request.mtr), request.key);
     tr.writeRanges[request.collectionName].insert(request.writeRange);
@@ -1242,10 +1255,10 @@ seastar::future<std::tuple<Status, dto::K23SIWriteKeyPersistResponse>>
 K23SIPartitionModule::handleWriteKeyPersist(dto::K23SIWriteKeyPersistRequest&& request) {
     K2LOG_D(log::skvsvr, "handle write key persist request {}", request);
 
-//    Status validateStatus = _validateReadRequest(request);
-//    if (!validateStatus.is2xxOK()) {
-//        return RPCResponse(std::move(validateStatus), dto::K23SIWriteKeyPersistResponse());
-//    }
+   Status validateStatus = _validateWriteTrackingRequest(request);
+   if (!validateStatus.is2xxOK()) {
+       return RPCResponse(std::move(validateStatus), dto::K23SIWriteKeyPersistResponse());
+   }
 
     K2LOG_D(log::skvsvr, "persisted write key {} with request_id {} from txn {}",
             request.writeKey, request.request_id, request.mtr);
